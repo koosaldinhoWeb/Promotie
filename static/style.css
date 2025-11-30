@@ -1,0 +1,71 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;  
+  color: black;  /* better readability on grey */
+  background: #d3d3d3; /* light grey */
+  min-height: 100vh;
+}
+
+header {
+  text-align: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+header h1 {
+  margin: 0;
+}
+
+nav {
+  margin-top: 10px;
+}
+
+nav a {
+  color: #fff;
+  text-decoration: none;
+  margin: 0 15px;
+  font-weight: bold;
+}
+
+main {
+  padding: 30px;
+  text-align: center;
+}
+
+.hero {
+  margin-top: 50px;
+}
+
+table {
+  margin: 10px auto;
+  width: 80%;
+  border-collapse: collapse;
+  background: rgba(255,255,255,0.1);
+}
+
+th, td {
+  padding: 2px;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+button {
+  background: #006600;
+  color: white;
+  border: none;
+  padding: 5px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+button:hover {
+  background: #009900;
+}
+/* 
+footer {
+  text-align: center;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+} */

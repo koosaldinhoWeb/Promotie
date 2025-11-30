@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Club Website</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>SV Promotie Style Club</h1>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/spelers">Spelers</a>
+      <a href="/player-overview">Genereer nieuwe ronde</a>
+      <a href="/finalized_round">Finalized Ronde</a>
+      <a href="/player_ranking">Tussenstand</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <p>&copy; 2025 - Chess Club</p>
+  </footer>
+</body>
+</html>

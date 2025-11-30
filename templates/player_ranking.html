@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Tussenstand na {{date}}</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Naam</th>
+      <th>Groep</th>
+      <th>Score</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in players %}
+    <tr>
+      <td><a href="/speler/{{ p.id }}">{{ p.name }}</a></td>
+      <td>{{ p.GroupNumber}}</td>
+      <td>{{ p.TotalPoints }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}

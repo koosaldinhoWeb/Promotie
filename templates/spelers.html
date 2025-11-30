@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Spelers</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Naam</th>
+        <th>Rating</th>
+        <th>Acties</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in players %}
+      <tr>
+        <td>{{ p.name }}</td>
+        <td>{{ p.rating }}</td>
+        <td>
+          <button>Bewerk</button>
+          <button>Verwijder</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

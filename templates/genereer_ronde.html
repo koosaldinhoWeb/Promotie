@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Huidige Ronde</h2>
+  <form action="/generate-round" method="post">
+    <button type="submit">Genereer nieuwe ronde</button>
+  </form>
+  <table id="pairingTable">
+    <thead>
+      <tr><th>Group</th><th>Player 1</th><th>Player 2</th></tr>
+    </thead>
+    <tbody>
+      {% for p in pairings %}
+      <tr>
+        <td>{{ p.group }}</td>
+        <td class="player" data-player="{{ p.player1 }}">{{ p.player1 }}</td>
+        <td class="player" data-player="{{ p.player2 }}">{{ p.player2 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p id="swapStatus">Klik op twee spelers om ze te wisselen.</p>
+
+  <form method="POST" action="/finalize-round">
+    <button type="submit" class="btn">Ronde Officieel Maken</button>
+  </form>
+
+  <style>
+    .player {
+      cursor: pointer;
+      background: rgba(255,255,255,0.1);
+      padding: 5px;
+    }
+    .player.selected {
+      background: yellow;
+      color: black;
+    }
+  </style>
+
+  <script>
+    
+    let firstSelection = null;
+
+    document.querySelectorAll('.player').forEach(cell => {
+      cell.addEventListener('click', () => {
+        if (!firstSelection) {
+          // First player selected
+          firstSelection = cell.dataset.player;
+          cell.classList.add('selected');
+          document.getElementById('swapStatus').innerText = 
+            `Geselecteerd: ${firstSelection}. Kies nu een andere speler.`;
+        } else {
+          // Second player selected
+          const secondSelection = cell.dataset.player;
+
+          if (secondSelection === firstSelection) {
+            // Same player clicked again
+            document.getElementById('swapStatus').innerText = "Je kan niet dezelfde speler kiezen.";
+            cell.classList.remove('selected');
+            firstSelection = null;
+            return;
+          }
+
+          // Call backend to swap
+          fetch('/swap-players', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ player_a: firstSelection, player_b: secondSelection })
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success) {
+              document.getElementById('swapStatus').innerText = 
+                `Wissel voltooid: ${firstSelection} ↔ ${secondSelection}`;
+              location.reload(); // reload table after swap
+            } else {
+              document.getElementById('swapStatus').innerText = 
+                `Fout bij wisselen: ${data.error}`;
+            }
+          });
+
+          // Reset selection
+          document.querySelectorAll('.player').forEach(p => p.classList.remove('selected'));
+          firstSelection = null;
+        }
+      });
+    });
+  </script>
+
+{% endblock %}

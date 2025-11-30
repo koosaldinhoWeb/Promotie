@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Spelers aanwezig voor ronde op {{date}}</h2>
+<form method="POST" action="/update-presence">
+<table>
+  <thead>
+    <tr>
+      <th>Naam</th>
+      <th>Aanwezig</th>
+      <th>Reden afwezigheid</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in players %}
+    <tr>
+      <td>{{ p.name }}</td>
+      <td>
+        <select name="present_{{ p.id }}">
+          <option value="1" {% if p.present == 1 %}selected{% endif %}>Ja</option>
+          <option value="0" {% if p.present == 0 %}selected{% endif %}>Nee</option>
+        </select>
+      </td>
+      <td>
+        {% if p.present == 0 %}
+          <select name="reason_{{ p.id }}">
+            <option value="">Geen reden opgegeven</option>
+            {% for r in reasons %}
+              <option value="{{ r[0] }}" {% if p.reason_id == r[0] %}selected{% endif %}>{{ r[1] }}</option>
+            {% endfor %}
+          </select>
+        {% else %}
+          -
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<button type="submit" class="btn">Opslaan</button>
+</form>
+<form method="POST" action="/generate-round">
+  <button type="submit" class="btn">Genereer Ronde</button>
+</form>
+{% endblock %}

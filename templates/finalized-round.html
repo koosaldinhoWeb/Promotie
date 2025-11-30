@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Huidige Ronde</h2>
+
+  <table id="pairingTable">
+    <thead>
+      <tr><th>Group</th><th>Player 1</th><th>Player 2</th><th>Results</th></tr>
+    </thead>
+    <tbody>
+      {% for p in pairings %}
+      <tr data-pairing-id="{{ p.Id }}">
+        <td>{{ p.group }}</td>
+        <td>{{ p.player1 }}</td>
+        <td>{{ p.player2 }}</td>
+        <td>
+          <select class="result-select"
+                  onchange="submitResult({{ p.Id }}, this.value)">
+            <option value="" {% if not p.Result %}selected{% endif %}>Select...</option>
+            <option value="1" {% if p.Result == 1 %}selected{% endif %}>White wins (1-0)</option>
+            <option value="2" {% if p.Result == 2 %}selected{% endif %}>Black wins (0-1)</option>
+            <option value="3" {% if p.Result == 3 %}selected{% endif %}>Draw (½-½)</option>
+          </select>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="POST" action="/save-results">
+    <button type="submit" class="btn">Save Results</button>
+  </form>
+
+<script>
+  const selects = document.querySelectorAll('.result-select');
+
+  selects.forEach((select, i) => {
+    select.addEventListener('keydown', (e) => {
+      if (['1', '2', '3'].includes(e.key)) {
+        e.preventDefault();
+
+        const value = e.key;
+        select.value = value;
+
+        const matchId = select.closest('tr').dataset.pairingId;
+
+        // Submit result without reloading
+        fetch('/update-result', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pairing_id: matchId, result_id: value })
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            // ✅ move to next select only after successful save
+            const next = selects[i + 1];
+            if (next) next.focus();
+          } else {
+            alert('Fout bij opslaan van resultaat');
+          }
+        });
+      }
+    });
+  });
+</script>
+
+<script>
+  window.onload = () => {
+    if (selects.length > 0) {
+      selects[0].focus();
+    }
+  };
+</script>
+
+<script>
+  function submitResult(pairingId, resultId) {
+    fetch('/update-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairing_id: pairingId, result_id: resultId })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success) {
+        alert('Fout bij opslaan van resultaat');
+      }
+    });
+  }
+  </script>
+
+  {% endblock %}

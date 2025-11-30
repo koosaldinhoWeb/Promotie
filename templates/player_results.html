@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Resultaten voor {{ player_name }}</h2>
+
+  {% if results %}
+    <table>
+      <thead>
+        <tr>
+          <th>Datum</th>
+          <th>Periode</th>
+          <th>Tegenstander</th>
+          <th>Resultaat</th>
+          <th>Punten</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{r.Date}}</td>
+          <td>{{r.Period}}</td>
+          <td><a href="/speler/{{ r.opponent_id }}">{{ r.opponent }}</a></td>
+          <td>{{ r.result_id }}</td>
+          <td>{{ r.Points}}</td>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Deze speler heeft nog geen gespeelde partijen.</p>
+  {% endif %}
+
+  <br>
+  <a href="javascript:history.back()"  class="btn">← Terug</a>
+{% endblock %}
