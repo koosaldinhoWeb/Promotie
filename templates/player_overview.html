@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Spelers aanwezig voor ronde op {{date}}</h2>
-<form method="POST" action="/update-presence">
+<form method="POST" action="/confirm-attendance">
 <table>
   <thead>
     <tr>
@@ -36,9 +36,6 @@
     {% endfor %}
   </tbody>
 </table>
-<button type="submit" class="btn">Opslaan</button>
-</form>
-<form method="POST" action="/generate-round">
-  <button type="submit" class="btn">Genereer Ronde</button>
+<button type="submit" class="btn">Akkoord</button>
 </form>
 {% endblock %}

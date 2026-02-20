@@ -117,88 +117,112 @@ def BuildNextRound():
     conn.commit()
 
 
-def SaveResultsToPlayers():
+def SaveResultsToPlayers(round_id=None):
     conn = sqlite3.connect("database.db")
     cur = conn.cursor()
 
-    # Haal de laatste ronde op
-    cur.execute("SELECT min(Id) FROM Rounds where Played = 0")
-    ActiveRound = cur.fetchone()[0]
+    # Determine round to process (explicit round or active unplayed round)
+    if round_id is None:
+        cur.execute("SELECT min(Id) FROM Rounds where Played = 0")
+        ActiveRound = cur.fetchone()[0]
+    else:
+        ActiveRound = round_id
 
-    # Haal de resultaten op
+    if ActiveRound is None:
+        conn.close()
+        return
+
+    # Reset existing stored results for this round so save is idempotent
+    cur.execute("DELETE FROM PlayersResults WHERE RoundId = ?", (ActiveRound,))
+
+    # Fetch pairings and points tables
     cur.execute("""SELECT a.PlayerId1, a.PlayerId2, a.ResultsType, a.GroupNumber,a.RoundId FROM Pairings a
                 WHERE a.RoundId = ?""", (ActiveRound,))
-    
     results = cur.fetchall()
-    cur.execute("""SELECT Resultstype,GroupNumber,Points,Id FROM Results a""")
-    points = cur.fetchall()
 
-    #Reminder for the result: 1 White, wins 2 Black wins, 3 Draw, 5 uneven oppoent
+    cur.execute("""SELECT Id, Resultstype, GroupNumber, Points FROM Results""")
+    results_rows = cur.fetchall()
+    points_by_type_group = {}
+    points_by_id = {}
+    for result_id, result_type, group_number, points in results_rows:
+        points_by_type_group[(result_type, group_number)] = (points, result_id)
+        points_by_id[result_id] = (group_number, points)
 
-    print(points)
+    # Reminder for result type: 1 white wins, 2 black wins, 3 draw, 5 uneven opponent
     for player1_id, player2_id, result_type, group_number,RoundId in results:
-        resultBlack = 0
-        PointsBlack=0
-        Points = 0
-        print(player1_id, player2_id, result_type, group_number, RoundId)
-        if result_type is not None:
-            if player1_id == 999 or player2_id == 999:
-                result_type=5
-                resultBlack =5
-            resultWhite = {1: 1, 2: 3, 3: 2}.get(result_type)
-            resultBlack = {1: 3, 2: 1, 3: 2}.get(result_type)
-        
-            print(resultBlack, result_type)
-            # print(resultBlack)
-            for ResultType,GroupNumber,PointsResult,Id in points:
-                if ResultType == resultWhite and GroupNumber == group_number:
-                    # print(PointsResult)
-                    Points = PointsResult
-                    ResultsId = Id
-                    break
-            for ResultType,GroupNumber,PointsResult,Id in points:
-                if ResultType == resultBlack and GroupNumber == group_number:
-                    PointsBlack = PointsResult
-                    ResultsIdBlack = Id
-                    break
-                 
-            cur.execute("""INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-                        VALUES (?, ?, ?, ?, ?, ?)""",
-                        (player1_id, player2_id, ResultsId, group_number, RoundId, Points))
-            cur.execute("""INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-                        VALUES (?, ?, ?, ?, ?, ?)""",
-                        (player2_id, player1_id, ResultsIdBlack, group_number, RoundId, PointsBlack))
+        # Uneven opponent (ID 999) gets automatic uneven result for real player only
+        if player1_id == 999 or player2_id == 999:
+            real_player = player2_id if player1_id == 999 else player1_id
+            if (5, group_number) in points_by_type_group:
+                points, result_id = points_by_type_group[(5, group_number)]
+                cur.execute(
+                    """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (real_player, 999, result_id, group_number, RoundId, points),
+                )
+            continue
 
-    # Also update the results for the absent players. First lets get the number of times a player was absent in this year
-    cur.execute("""SELECT Value FROM settings WHERE Name = 'Year'""")
-    Year = cur.fetchone()[0]
+        # Skip normal pairings that are not completed yet
+        if result_type is None:
+            continue
+
+        resultWhite = {1: 1, 2: 3, 3: 2}.get(result_type)
+        resultBlack = {1: 3, 2: 1, 3: 2}.get(result_type)
+        if resultWhite is None or resultBlack is None:
+            continue
+
+        white_data = points_by_type_group.get((resultWhite, group_number))
+        black_data = points_by_type_group.get((resultBlack, group_number))
+        if white_data is None or black_data is None:
+            continue
+
+        white_points, white_result_id = white_data
+        black_points, black_result_id = black_data
+
+        cur.execute(
+            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (player1_id, player2_id, white_result_id, group_number, RoundId, white_points),
+        )
+        cur.execute(
+            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (player2_id, player1_id, black_result_id, group_number, RoundId, black_points),
+        )
+
+    # Also store results for absent players in this round
     cur.execute("""SELECT PlayerId,Present,ReasonAbsentId,b.GroupNumber,a.RoundId FROM Present a
                 LEFT JOIN Players b ON a.PlayerId = b.Id
-                INNER JOIN Rounds c ON a.RoundId = c.Id
-                WHERE a.Present = 0 AND c.Year = ?
-                """, (Year,))
+                WHERE a.Present = 0 AND a.RoundId = ?
+                """, (ActiveRound,))
     absent_players = cur.fetchall()
-    print(absent_players)
+
     for player_id, present, reason_id, group_number, RoundId in absent_players:
-        if present == 0 and RoundId == ActiveRound:
+        if present != 0 or RoundId != ActiveRound:
+            continue
 
-            if reason_id =='':
-                result_type = 4
-                for r in points:
-                    if r[0] == result_type and r[1] == group_number:
-                        Points = r[2]
-                        ResultsId = r[3]
-                        break  
+        if reason_id is None:
+            default_absent = points_by_type_group.get((4, group_number))
+            if default_absent is None:
+                continue
+            points, result_id = default_absent
+        else:
+            reason_data = points_by_id.get(reason_id)
+            if reason_data is None:
+                default_absent = points_by_type_group.get((4, group_number))
+                if default_absent is None:
+                    continue
+                points, result_id = default_absent
             else:
-                for r in points:
-                    if r[3] == reason_id and r[1] == group_number:
-                        Points = r[2]
-                        ResultsId = r[3]
-                        break 
+                _, points = reason_data
+                result_id = reason_id
 
-            cur.execute("""INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-                        VALUES (?, ?, ?, ?, ?, ?)""",
-                        (player_id, 998, ResultsId, group_number, RoundId, Points))
+        cur.execute(
+            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (player_id, 998, result_id, group_number, RoundId, points),
+        )
+
     cur.execute("UPDATE Rounds SET Played = 1 WHERE Id = ?", (ActiveRound,))
 
     conn.commit()

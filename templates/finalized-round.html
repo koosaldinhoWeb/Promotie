@@ -2,6 +2,9 @@
 
 {% block content %}
   <h2>Huidige Ronde</h2>
+  {% if round_id %}
+    <p>Ronde {{ round_id }}: resultaten kunnen later aangepast en opnieuw opgeslagen worden.</p>
+  {% endif %}
 
   <table id="pairingTable">
     <thead>
@@ -27,7 +30,8 @@
     </tbody>
   </table>
   <form method="POST" action="/save-results">
-    <button type="submit" class="btn">Save Results</button>
+    <input type="hidden" name="round_id" value="{{ round_id }}">
+    <button type="submit" class="btn">Opslaan / Update Resultaten</button>
   </form>
 
 <script>
