@@ -15,6 +15,11 @@ def query_db(query, args=(), one=False):
     return rows if not one else rows[0] if rows else None
 
 
+def get_latest_round_with_pairings():
+    row = query_db("SELECT MAX(RoundId) FROM Pairings", one=True)
+    return row[0] if row and row[0] is not None else None
+
+
 @app.route("/")
 def home():
     return render_template("home.html")
@@ -77,6 +82,43 @@ def update_presence():
             conn.commit()
             conn.close()
     return redirect("/player-overview")
+
+
+@app.route("/confirm-attendance", methods=["POST"])
+def confirm_attendance():
+    active_round = query_db("SELECT MIN(Id) FROM Rounds WHERE Played = 0", one=True)
+    if not active_round or active_round[0] is None:
+        return jsonify({"success": False, "error": "No active round found"}), 400
+
+    active_round_id = active_round[0]
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+
+    for key, value in request.form.items():
+        if not key.startswith("present_"):
+            continue
+
+        player_id = key.split("_")[1]
+        present = int(value)
+        reason_key = f"reason_{player_id}"
+        reason_id = request.form.get(reason_key, None)
+
+        if present == 1:
+            cur.execute(
+                "UPDATE Present SET Present=?, ReasonAbsentId=NULL WHERE PlayerId=? AND RoundId=?",
+                (present, player_id, active_round_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE Present SET Present=?, ReasonAbsentId=? WHERE PlayerId=? AND RoundId=?",
+                (present, reason_id, player_id, active_round_id),
+            )
+
+    conn.commit()
+    conn.close()
+
+    BuildNextRound()
+    return redirect("/genereer-ronde")
 
 @app.route("/generate-round", methods=["POST"])
 def generate_round():
@@ -158,39 +200,49 @@ def swap_players():
 
 @app.route("/finalize-round", methods=["POST"])
 def finalize_roundfromTemp():
-
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
+    cur.execute("SELECT RoundId FROM TempPairing LIMIT 1")
+    round_row = cur.fetchone()
+    if not round_row:
+        conn.close()
+        return redirect("/genereer-ronde")
+
+    round_id = round_row[0]
+    cur.execute("DELETE FROM Pairings WHERE RoundId = ?", (round_id,))
     cur.execute("""
         INSERT INTO Pairings (PlayerId1, PlayerId2, RoundId, GroupNumber)
         SELECT PlayerId1, PlayerId2, RoundId, GroupNumber FROM TempPairing
     """)
+    cur.execute("DELETE FROM TempPairing")
     conn.commit()
     conn.close()
-    return redirect("/finalized_round")
+    return redirect(f"/finalized_round?round_id={round_id}")
 
 @app.route("/finalized_round")
 def finalize_round():
+    selected_round = request.args.get("round_id", type=int)
+    if selected_round is None:
+        selected_round = get_latest_round_with_pairings()
 
-    rows = query_db("""SELECT b.Name, c.Name, RoundId, a.GroupNumber,a.ResultsType,a.Id FROM Pairings a
-                    LEFT JOIN Players b ON a.PlayerId1 = b.Id
-                    LEFT JOIN Players c ON a.PlayerId2 = c.Id
-                    WHERE a.RoundId = (SELECT MAX(RoundId) FROM Pairings)
-                    ORDER BY a.GroupNumber ASC""")
+    if selected_round is None:
+        return render_template("finalized-round.html", pairings=[], round_id=None)
+
+    rows = query_db(
+        """SELECT b.Name, c.Name, RoundId, a.GroupNumber,a.ResultsType,a.Id FROM Pairings a
+           LEFT JOIN Players b ON a.PlayerId1 = b.Id
+           LEFT JOIN Players c ON a.PlayerId2 = c.Id
+           WHERE a.RoundId = ?
+           ORDER BY a.GroupNumber ASC""",
+        (selected_round,),
+    )
 
     pairings = [
     {"player1": r[0], "player2": r[1], "round": r[2], "group": r[3],"Result": r[4],"Id": r[5]}
     for r in rows
     ]
-    # Redirect to finalized round page
 
-    conn = sqlite3.connect(DATABASE)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM TempPairing")
-    conn.commit()
-    conn.close()
-
-    return render_template("finalized-round.html", pairings=pairings)
+    return render_template("finalized-round.html", pairings=pairings, round_id=selected_round)
 
 @app.route("/update-result", methods=["POST"])
 def update_result():
@@ -199,12 +251,15 @@ def update_result():
     pairing_id = data.get("pairing_id")
     result_id = data.get("result_id")
     print(pairing_id)
-    if not pairing_id or not result_id:
+    if not pairing_id:
         return jsonify({"success": False, "error": "Missing data"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
-    cur.execute("UPDATE Pairings SET ResultsType=? WHERE Id=?", (result_id, pairing_id))
+    if result_id in (None, ""):
+        cur.execute("UPDATE Pairings SET ResultsType=NULL WHERE Id=?", (pairing_id,))
+    else:
+        cur.execute("UPDATE Pairings SET ResultsType=? WHERE Id=?", (int(result_id), pairing_id))
     conn.commit()
     conn.close()
 
@@ -214,8 +269,32 @@ def update_result():
 
 @app.route("/save-results", methods=["POST"])
 def save_results():
-    SaveResultsToPlayers()
-    return redirect("/finalized_round")
+    round_id = request.form.get("round_id", type=int)
+    if round_id is None:
+        round_id = get_latest_round_with_pairings()
+
+    if round_id is None:
+        return jsonify({"success": False, "error": "No round found to save"}), 400
+
+    missing = query_db(
+        """
+        SELECT COUNT(*) FROM Pairings
+        WHERE RoundId = ?
+          AND ResultsType IS NULL
+          AND PlayerId1 != 999
+          AND PlayerId2 != 999
+        """,
+        (round_id,),
+        one=True,
+    )[0]
+
+    if missing > 0:
+        return jsonify(
+            {"success": False, "error": "Not all results are filled in for this round"}
+        ), 400
+
+    SaveResultsToPlayers(round_id)
+    return redirect(f"/finalized_round?round_id={round_id}")
 
 @app.route("/player_ranking")
 def ranking():    
