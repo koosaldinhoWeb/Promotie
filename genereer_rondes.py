@@ -3,7 +3,110 @@ from collections import defaultdict
 from itertools import combinations
 import pandas as pd
 
+def RefreshPlayersResults():
+    conn = sqlite3.connect("database.db")
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM PlayersResults")
+
+    cur.execute("""SELECT Id, Resultstype, GroupNumber, Points FROM Results""")
+    results_rows = cur.fetchall()
+    points_by_type_group = {}
+    points_by_id = {}
+    for result_id, result_type, group_number, points in results_rows:
+        points_by_type_group[(result_type, group_number)] = (points, result_id)
+        points_by_id[result_id] = (group_number, points)
+
+    cur.execute(
+        """SELECT a.PlayerId1, a.PlayerId2, a.ResultsType, a.GroupNumber, a.RoundId
+           FROM Pairings a
+           INNER JOIN Rounds b ON a.RoundId = b.Id
+           WHERE b.Played = 1"""
+    )
+    played_pairings = cur.fetchall()
+
+    for player1_id, player2_id, result_type, group_number, round_id in played_pairings:
+        if player1_id == 999 or player2_id == 999:
+            real_player = player2_id if player1_id == 999 else player1_id
+            uneven = points_by_type_group.get((5, group_number))
+            if uneven is None:
+                continue
+            points, result_id = uneven
+            cur.execute(
+                """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (real_player, 999, result_id, group_number, round_id, points),
+            )
+            continue
+
+        if result_type is None:
+            continue
+
+        result_white = {1: 1, 2: 3, 3: 2}.get(result_type)
+        result_black = {1: 3, 2: 1, 3: 2}.get(result_type)
+        if result_white is None or result_black is None:
+            continue
+
+        white_data = points_by_type_group.get((result_white, group_number))
+        black_data = points_by_type_group.get((result_black, group_number))
+        if white_data is None or black_data is None:
+            continue
+
+        white_points, white_result_id = white_data
+        black_points, black_result_id = black_data
+
+        cur.execute(
+            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (player1_id, player2_id, white_result_id, group_number, round_id, white_points),
+        )
+        cur.execute(
+            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (player2_id, player1_id, black_result_id, group_number, round_id, black_points),
+        )
+
+    cur.execute(
+        """SELECT a.PlayerId, a.Present, a.ReasonAbsentId, b.GroupNumber, a.RoundId
+           FROM Present a
+           LEFT JOIN Players b ON a.PlayerId = b.Id
+           INNER JOIN Rounds c ON a.RoundId = c.Id
+           WHERE a.Present = 0 AND c.Played = 1"""
+    )
+    absent_players = cur.fetchall()
+
+    for player_id, present, reason_id, group_number, round_id in absent_players:
+        if present != 0:
+            continue
+
+        if reason_id is None:
+            default_absent = points_by_type_group.get((4, group_number))
+            if default_absent is None:
+                continue
+            points, result_id = default_absent
+        else:
+            reason_data = points_by_id.get(reason_id)
+            if reason_data is None:
+                default_absent = points_by_type_group.get((4, group_number))
+                if default_absent is None:
+                    continue
+                points, result_id = default_absent
+            else:
+                _, points = reason_data
+                result_id = reason_id
+
+        cur.execute(
+            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (player_id, 998, result_id, group_number, round_id, points),
+        )
+
+    conn.commit()
+    conn.close()
+
 def BuildNextRound():
+    RefreshPlayersResults()
+
     # Verbinden met de bestaande database
     conn = sqlite3.connect("database.db")
     cur = conn.cursor()
@@ -132,97 +235,7 @@ def SaveResultsToPlayers(round_id=None):
         conn.close()
         return
 
-    # Reset existing stored results for this round so save is idempotent
-    cur.execute("DELETE FROM PlayersResults WHERE RoundId = ?", (ActiveRound,))
-
-    # Fetch pairings and points tables
-    cur.execute("""SELECT a.PlayerId1, a.PlayerId2, a.ResultsType, a.GroupNumber,a.RoundId FROM Pairings a
-                WHERE a.RoundId = ?""", (ActiveRound,))
-    results = cur.fetchall()
-
-    cur.execute("""SELECT Id, Resultstype, GroupNumber, Points FROM Results""")
-    results_rows = cur.fetchall()
-    points_by_type_group = {}
-    points_by_id = {}
-    for result_id, result_type, group_number, points in results_rows:
-        points_by_type_group[(result_type, group_number)] = (points, result_id)
-        points_by_id[result_id] = (group_number, points)
-
-    # Reminder for result type: 1 white wins, 2 black wins, 3 draw, 5 uneven opponent
-    for player1_id, player2_id, result_type, group_number,RoundId in results:
-        # Uneven opponent (ID 999) gets automatic uneven result for real player only
-        if player1_id == 999 or player2_id == 999:
-            real_player = player2_id if player1_id == 999 else player1_id
-            if (5, group_number) in points_by_type_group:
-                points, result_id = points_by_type_group[(5, group_number)]
-                cur.execute(
-                    """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (real_player, 999, result_id, group_number, RoundId, points),
-                )
-            continue
-
-        # Skip normal pairings that are not completed yet
-        if result_type is None:
-            continue
-
-        resultWhite = {1: 1, 2: 3, 3: 2}.get(result_type)
-        resultBlack = {1: 3, 2: 1, 3: 2}.get(result_type)
-        if resultWhite is None or resultBlack is None:
-            continue
-
-        white_data = points_by_type_group.get((resultWhite, group_number))
-        black_data = points_by_type_group.get((resultBlack, group_number))
-        if white_data is None or black_data is None:
-            continue
-
-        white_points, white_result_id = white_data
-        black_points, black_result_id = black_data
-
-        cur.execute(
-            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (player1_id, player2_id, white_result_id, group_number, RoundId, white_points),
-        )
-        cur.execute(
-            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (player2_id, player1_id, black_result_id, group_number, RoundId, black_points),
-        )
-
-    # Also store results for absent players in this round
-    cur.execute("""SELECT PlayerId,Present,ReasonAbsentId,b.GroupNumber,a.RoundId FROM Present a
-                LEFT JOIN Players b ON a.PlayerId = b.Id
-                WHERE a.Present = 0 AND a.RoundId = ?
-                """, (ActiveRound,))
-    absent_players = cur.fetchall()
-
-    for player_id, present, reason_id, group_number, RoundId in absent_players:
-        if present != 0 or RoundId != ActiveRound:
-            continue
-
-        if reason_id is None:
-            default_absent = points_by_type_group.get((4, group_number))
-            if default_absent is None:
-                continue
-            points, result_id = default_absent
-        else:
-            reason_data = points_by_id.get(reason_id)
-            if reason_data is None:
-                default_absent = points_by_type_group.get((4, group_number))
-                if default_absent is None:
-                    continue
-                points, result_id = default_absent
-            else:
-                _, points = reason_data
-                result_id = reason_id
-
-        cur.execute(
-            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId,Points)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (player_id, 998, result_id, group_number, RoundId, points),
-        )
-
+    # Only close/finalize the round. Points/results are recalculated on demand.
     cur.execute("UPDATE Rounds SET Played = 1 WHERE Id = ?", (ActiveRound,))
 
     conn.commit()

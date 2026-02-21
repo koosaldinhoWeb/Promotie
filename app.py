@@ -1,6 +1,6 @@
 import sqlite3
 from flask import Flask, render_template,request, jsonify,redirect
-from genereer_rondes import BuildNextRound,SaveResultsToPlayers
+from genereer_rondes import BuildNextRound,SaveResultsToPlayers,RefreshPlayersResults
 
 app = Flask(__name__)
 
@@ -298,6 +298,7 @@ def save_results():
 
 @app.route("/player_ranking")
 def ranking():    
+    RefreshPlayersResults()
     date = query_db("SELECT Date FROM Rounds WHERE Played = 1 ORDER BY ID DESC LIMIT 1", one=True)
 
     rows = query_db("""
@@ -322,10 +323,12 @@ def ranking():
     ]
     
     # Get all possible results/reasons
-    return render_template("player_ranking.html", players=players, date = date[0])
+    ranking_date = date[0] if date else "-"
+    return render_template("player_ranking.html", players=players, date = ranking_date)
 
 @app.route("/speler/<int:player_id>")
 def player_results(player_id):
+    RefreshPlayersResults()
     # Fetch player name
     player_name_row = query_db("SELECT name FROM Players WHERE id = ?", (player_id,), one=True)
     player_name = player_name_row[0] if player_name_row else f"Speler {player_id}"
