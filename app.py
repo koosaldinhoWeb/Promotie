@@ -528,7 +528,7 @@ def round_editor():
     ]
     reasons = query_db("SELECT Id, Name FROM Results ORDER BY Id ASC")
     pairing_rows = query_db(
-        """SELECT b.Name, c.Name, a.GroupNumber, a.ResultsType, a.Id
+        """SELECT b.Name, c.Name, a.GroupNumber, a.ResultsType, a.Id, a.PlayerId1, a.PlayerId2
            FROM Pairings a
            LEFT JOIN Players b ON a.PlayerId1 = b.Id
            LEFT JOIN Players c ON a.PlayerId2 = c.Id
@@ -537,8 +537,30 @@ def round_editor():
         (selected_round,),
     )
     pairings = [
-        {"player1": r[0], "player2": r[1], "group": r[2], "Result": r[3], "Id": r[4]}
+        {
+            "player1": r[0],
+            "player2": r[1],
+            "group": r[2],
+            "Result": r[3],
+            "Id": r[4],
+            "player1_id": r[5],
+            "player2_id": r[6],
+        }
         for r in pairing_rows
+    ]
+    present_players = [
+        {"id": p["id"], "name": p["name"]}
+        for p in players
+        if p["present"] == 1
+    ]
+    paired_ids = set()
+    for p in pairings:
+        if p["player1_id"] != "999":
+            paired_ids.add(str(p["player1_id"]))
+        if p["player2_id"] != "999":
+            paired_ids.add(str(p["player2_id"]))
+    unpaired_present_players = [
+        p for p in present_players if str(p["id"]) not in paired_ids
     ]
     round_date = date[0] if date else "-"
     return render_template(
@@ -549,6 +571,8 @@ def round_editor():
         players=players,
         reasons=reasons,
         pairings=pairings,
+        present_players=present_players,
+        unpaired_present_players=unpaired_present_players,
     )
 
 @app.route("/round-editor/update-presence", methods=["POST"])
@@ -614,6 +638,137 @@ def round_editor_update_result():
             "UPDATE Pairings SET ResultsType = ? WHERE Id = ?",
             (int(result_id), pairing_id),
         )
+    conn.commit()
+    conn.close()
+    RefreshPlayersResults()
+    return jsonify({"success": True})
+
+@app.route("/round-editor/swap-players", methods=["POST"])
+def round_editor_swap_players():
+    data = request.json
+    round_id = data.get("round_id")
+    player_a_id = data.get("player_a_id")
+    player_b_id = data.get("player_b_id")
+
+    if not round_id or not player_a_id or not player_b_id:
+        return jsonify({"success": False, "error": "Missing data"}), 400
+    if str(player_a_id) == str(player_b_id):
+        return jsonify({"success": False, "error": "Select two different players"}), 400
+
+    round_row = query_db("SELECT Played FROM Rounds WHERE Id = ?", (round_id,), one=True)
+    if not round_row or round_row[0] != 1:
+        return jsonify({"success": False, "error": "Only played rounds can be edited here"}), 400
+
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+
+    cur.execute(
+        """SELECT PlayerId, Present
+           FROM Present
+           WHERE RoundId = ? AND PlayerId IN (?, ?)""",
+        (round_id, str(player_a_id), str(player_b_id)),
+    )
+    present_rows = {row[0]: row[1] for row in cur.fetchall()}
+    if present_rows.get(str(player_a_id), 0) != 1 or present_rows.get(str(player_b_id), 0) != 1:
+        conn.close()
+        return jsonify({"success": False, "error": "Both players must be marked present first"}), 400
+
+    cur.execute("SELECT GroupNumber FROM Players WHERE Id = ?", (str(player_a_id),))
+    group_a = cur.fetchone()
+    cur.execute("SELECT GroupNumber FROM Players WHERE Id = ?", (str(player_b_id),))
+    group_b = cur.fetchone()
+    if not group_a or not group_b:
+        conn.close()
+        return jsonify({"success": False, "error": "Player not found"}), 400
+    if group_a[0] != group_b[0]:
+        conn.close()
+        return jsonify({"success": False, "error": "Players must be in the same group"}), 400
+
+    cur.execute(
+        """SELECT Id, PlayerId1, PlayerId2, GroupNumber
+           FROM Pairings
+           WHERE RoundId = ? AND (PlayerId1 = ? OR PlayerId2 = ?)""",
+        (round_id, str(player_a_id), str(player_a_id)),
+    )
+    match_a = cur.fetchone()
+    cur.execute(
+        """SELECT Id, PlayerId1, PlayerId2, GroupNumber
+           FROM Pairings
+           WHERE RoundId = ? AND (PlayerId1 = ? OR PlayerId2 = ?)""",
+        (round_id, str(player_b_id), str(player_b_id)),
+    )
+    match_b = cur.fetchone()
+
+    # Both players already paired.
+    if match_a and match_b:
+        if match_a[3] != match_b[3]:
+            conn.close()
+            return jsonify({"success": False, "error": "Players are not in the same group pairings"}), 400
+
+        if match_a[0] == match_b[0]:
+            row_id, p1, p2, _ = match_a
+            if {p1, p2} != {str(player_a_id), str(player_b_id)}:
+                conn.close()
+                return jsonify({"success": False, "error": "Players are not opponents in this round"}), 400
+            cur.execute(
+                "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
+                (p2, p1, row_id),
+            )
+        else:
+            def swap_player_in_match(match, swap_out, swap_in):
+                row_id, p1, p2, grp = match
+                if p1 == swap_out:
+                    p1 = swap_in
+                elif p2 == swap_out:
+                    p2 = swap_in
+                return row_id, p1, p2, grp
+
+            new_a = swap_player_in_match(match_a, str(player_a_id), str(player_b_id))
+            new_b = swap_player_in_match(match_b, str(player_b_id), str(player_a_id))
+            cur.execute(
+                "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
+                (new_a[1], new_a[2], new_a[0]),
+            )
+            cur.execute(
+                "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
+                (new_b[1], new_b[2], new_b[0]),
+            )
+    # One player is paired, the other is currently unpaired.
+    elif match_a or match_b:
+        in_match = match_a if match_a else match_b
+        out_id = str(player_a_id) if match_a else str(player_b_id)
+        in_id = str(player_b_id) if match_a else str(player_a_id)
+        row_id, p1, p2, grp = in_match
+
+        if grp != group_a[0]:
+            conn.close()
+            return jsonify({"success": False, "error": "Cannot move player into a different group pairing"}), 400
+
+        if p1 == out_id:
+            p1 = in_id
+        elif p2 == out_id:
+            p2 = in_id
+        else:
+            conn.close()
+            return jsonify({"success": False, "error": "Swap failed"}), 400
+
+        cur.execute(
+            "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
+            (p1, p2, row_id),
+        )
+        # Keep attendance in sync with who is actually playing this round.
+        cur.execute(
+            "UPDATE Present SET Present = 1, ReasonAbsentId = NULL WHERE RoundId = ? AND PlayerId = ?",
+            (round_id, in_id),
+        )
+        cur.execute(
+            "UPDATE Present SET Present = 0, ReasonAbsentId = NULL WHERE RoundId = ? AND PlayerId = ?",
+            (round_id, out_id),
+        )
+    else:
+        conn.close()
+        return jsonify({"success": False, "error": "Neither selected player is currently in a pairing"}), 400
+
     conn.commit()
     conn.close()
     RefreshPlayersResults()

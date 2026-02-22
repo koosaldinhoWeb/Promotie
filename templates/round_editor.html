@@ -57,6 +57,30 @@
   </form>
 
   <h3>Wedstrijdresultaten</h3>
+  {% if unpaired_present_players and unpaired_present_players|length > 0 %}
+    <p>Niet ingedeelde aanwezige spelers:
+      {% for p in unpaired_present_players %}
+        {{ p.name }}{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </p>
+  {% endif %}
+
+  <p>
+    <label for="swap_player_a">Wissel speler:</label>
+    <select id="swap_player_a">
+      {% for p in present_players %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <label for="swap_player_b">met speler:</label>
+    <select id="swap_player_b">
+      {% for p in present_players %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="btn" onclick="swapPlayers()">Wissel</button>
+  </p>
+
   <table id="pairingTable">
     <thead>
       <tr><th>Groep</th><th>Player 1</th><th>Player 2</th><th>Resultaat</th></tr>
@@ -104,6 +128,33 @@
       if (!data.success) {
         alert('Fout bij opslaan van resultaat');
       }
+    });
+  }
+
+  function swapPlayers() {
+    const playerAId = document.getElementById("swap_player_a").value;
+    const playerBId = document.getElementById("swap_player_b").value;
+    if (!playerAId || !playerBId || playerAId === playerBId) {
+      alert('Selecteer twee verschillende spelers');
+      return;
+    }
+
+    fetch('/round-editor/swap-players', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        round_id: {{ round_id }},
+        player_a_id: playerAId,
+        player_b_id: playerBId
+      })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success) {
+        alert(data.error || 'Fout bij wisselen van spelers');
+        return;
+      }
+      window.location.reload();
     });
   }
 </script>
