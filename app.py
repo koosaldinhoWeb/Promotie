@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime
 from flask import Flask, render_template,request, jsonify,redirect
 from genereer_rondes import BuildNextRound,SaveResultsToPlayers,RefreshPlayersResults
 
@@ -22,6 +23,18 @@ def get_latest_round_with_pairings():
 def get_latest_played_round():
     row = query_db("SELECT MAX(Id) FROM Rounds WHERE Played = 1", one=True)
     return row[0] if row and row[0] is not None else None
+
+def upsert_setting(cur, name, value, description=None):
+    cur.execute("UPDATE Settings SET Value = ? WHERE Name = ?", (str(value), name))
+    if cur.rowcount > 0:
+        return
+
+    cur.execute("SELECT COALESCE(MAX(CAST(Id AS INTEGER)), 0) + 1 FROM Settings")
+    new_id = str(cur.fetchone()[0])
+    cur.execute(
+        "INSERT INTO Settings (Id, Name, Value, Description) VALUES (?, ?, ?, ?)",
+        (new_id, name, str(value), description),
+    )
 
 
 @app.route("/")
@@ -374,6 +387,99 @@ def player_results(player_id):
     ]
 
     return render_template("player_results.html", player_id=player_id, player_name=player_name, results=results)
+
+@app.route("/competition")
+def competition():
+    settings_rows = query_db(
+        "SELECT Name, Value FROM Settings WHERE Name IN ('NumberOfPeriodRounds', 'NumberOfNonCompete', 'Year')"
+    )
+    settings_map = {name: value for name, value in settings_rows}
+    rounds = query_db("SELECT Id, Date, Played FROM Rounds ORDER BY Id ASC")
+    round_dates = [r[1] for r in rounds]
+    return render_template(
+        "competition.html",
+        rounds=rounds,
+        round_dates=round_dates,
+        number_of_rounds=int(settings_map.get("NumberOfPeriodRounds", 0) or 0),
+        non_compete=int(settings_map.get("NumberOfNonCompete", 0) or 0),
+        competition_year=settings_map.get("Year", "-"),
+    )
+
+@app.route("/competition/reset-results", methods=["POST"])
+def competition_reset_results():
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+
+    # Clear all historical round outcomes while keeping competition structure.
+    cur.execute("DELETE FROM PlayersResults")
+    cur.execute("UPDATE Pairings SET ResultsType = NULL")
+    cur.execute("UPDATE Rounds SET Played = 0")
+    cur.execute("DELETE FROM TempPairing")
+
+    conn.commit()
+    conn.close()
+    return redirect("/competition")
+
+@app.route("/competition/create", methods=["POST"])
+def competition_create():
+    number_of_rounds = request.form.get("number_of_rounds", type=int)
+    non_compete = request.form.get("non_compete_rounds", type=int)
+    round_dates = request.form.getlist("round_date")
+
+    if number_of_rounds is None or number_of_rounds < 1:
+        return jsonify({"success": False, "error": "Number of rounds must be at least 1"}), 400
+    if non_compete is None or non_compete < 0:
+        return jsonify({"success": False, "error": "Number of rounds between pairings must be 0 or more"}), 400
+    if len(round_dates) != number_of_rounds:
+        return jsonify({"success": False, "error": "Provide exactly one date per round"}), 400
+
+    parsed_dates = []
+    for d in round_dates:
+        try:
+            parsed_dates.append(datetime.strptime(d, "%Y-%m-%d").date())
+        except ValueError:
+            return jsonify({"success": False, "error": f"Invalid date format: {d}"}), 400
+
+    year = parsed_dates[0].year
+
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+
+    # Start a clean competition.
+    cur.execute("DELETE FROM PlayersResults")
+    cur.execute("DELETE FROM Pairings")
+    cur.execute("DELETE FROM TempPairing")
+    cur.execute("DELETE FROM Present")
+    cur.execute("DELETE FROM Rounds")
+
+    rounds_to_insert = [
+        (idx, "1", idx, year, parsed_dates[idx - 1].isoformat(), 0)
+        for idx in range(1, number_of_rounds + 1)
+    ]
+    cur.executemany(
+        "INSERT INTO Rounds (Id, Period, RoundNumber, Year, Date, Played) VALUES (?, ?, ?, ?, ?, ?)",
+        rounds_to_insert,
+    )
+
+    cur.execute("SELECT Id FROM Players WHERE Active = 1 ORDER BY Id ASC")
+    player_rows = cur.fetchall()
+    present_rows = [
+        (str(player_id), round_id, 1, None)
+        for (player_id,) in player_rows
+        for round_id in range(1, number_of_rounds + 1)
+    ]
+    cur.executemany(
+        "INSERT INTO Present (PlayerId, RoundId, Present, ReasonAbsentId) VALUES (?, ?, ?, ?)",
+        present_rows,
+    )
+
+    upsert_setting(cur, "NumberOfPeriodRounds", number_of_rounds, "Number of rounds in competition")
+    upsert_setting(cur, "NumberOfNonCompete", non_compete, "Rounds between identical pairings")
+    upsert_setting(cur, "Year", year, "Year the competition started in")
+
+    conn.commit()
+    conn.close()
+    return redirect("/competition")
 
 @app.route("/round-editor")
 def round_editor():
