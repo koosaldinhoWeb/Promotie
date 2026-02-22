@@ -4,6 +4,7 @@
   <h2>Huidige Ronde</h2>
   {% if round_id %}
     <p>Ronde {{ round_id }}: resultaten kunnen later aangepast en opnieuw opgeslagen worden.</p>
+    <p><a href="/round-editor?round_id={{ round_id }}" class="btn">Bewerk deze ronde</a></p>
   {% endif %}
   <p><a href="/player-overview" class="btn">Terug: aanwezigheid aanpassen</a></p>
 
