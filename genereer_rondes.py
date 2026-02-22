@@ -35,9 +35,16 @@ def RefreshPlayersResults():
     played_pairings = cur.fetchall()
 
     for player1_id, player2_id, result_type, group_number, round_id in played_pairings:
-        if player1_id == 999 or player2_id == 999:
-            real_player = player2_id if player1_id == 999 else player1_id
-            real_player_present = present_by_round_player.get((round_id, real_player), 1)
+        player1_key = str(player1_id)
+        player2_key = str(player2_id)
+
+        if player1_key == "NONE" or player2_key == "NONE":
+            # Placeholder pairing rows in round editor should not generate points.
+            continue
+
+        if player1_key == "999" or player2_key == "999":
+            real_player_key = player2_key if player1_key == "999" else player1_key
+            real_player_present = present_by_round_player.get((round_id, real_player_key), 1)
             if real_player_present != 1:
                 continue
             uneven = points_by_type_group.get((5, group_number))
@@ -47,7 +54,7 @@ def RefreshPlayersResults():
             cur.execute(
                 """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (real_player, 999, result_id, group_number, round_id, points),
+                (real_player_key, "999", result_id, group_number, round_id, points),
             )
             continue
 
@@ -66,20 +73,20 @@ def RefreshPlayersResults():
 
         white_points, white_result_id = white_data
         black_points, black_result_id = black_data
-        player1_present = present_by_round_player.get((round_id, player1_id), 1)
-        player2_present = present_by_round_player.get((round_id, player2_id), 1)
+        player1_present = present_by_round_player.get((round_id, player1_key), 1)
+        player2_present = present_by_round_player.get((round_id, player2_key), 1)
 
         if player1_present == 1:
             cur.execute(
                 """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (player1_id, player2_id, white_result_id, group_number, round_id, white_points),
+                (player1_key, player2_key, white_result_id, group_number, round_id, white_points),
             )
         if player2_present == 1:
             cur.execute(
                 """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (player2_id, player1_id, black_result_id, group_number, round_id, black_points),
+                (player2_key, player1_key, black_result_id, group_number, round_id, black_points),
             )
 
     cur.execute(

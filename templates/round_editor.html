@@ -60,6 +60,17 @@
   </form>
 
   <h3>Wedstrijdresultaten</h3>
+  <form method="POST" action="/round-editor/add-pairing">
+    <input type="hidden" name="round_id" value="{{ round_id }}">
+    <label for="group_number">Voeg pairing toe voor groep:</label>
+    <select id="group_number" name="group_number">
+      {% for g in group_numbers %}
+        <option value="{{ g }}">{{ g }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn">Add pairing (None vs None)</button>
+  </form>
+
   {% if unpaired_present_players and unpaired_present_players|length > 0 %}
     <p>Niet ingedeelde aanwezige spelers:
       {% for p in unpaired_present_players %}
@@ -95,7 +106,7 @@
         <td>{{ p.player1 }}</td>
         <td>{{ p.player2 }}</td>
         <td>
-          <select class="result-select" onchange="submitResult({{ p.Id }}, this.value)">
+          <select class="result-select" onchange="submitResult({{ p.Id }}, this.value)" {% if p.has_placeholder %}disabled{% endif %}>
             <option value="" {% if not p.Result %}selected{% endif %}>Select...</option>
             <option value="1" {% if p.Result == 1 %}selected{% endif %}>White wins (1-0)</option>
             <option value="2" {% if p.Result == 2 %}selected{% endif %}>Black wins (0-1)</option>
