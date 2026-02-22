@@ -24,6 +24,18 @@ def get_latest_played_round():
     row = query_db("SELECT MAX(Id) FROM Rounds WHERE Played = 1", one=True)
     return row[0] if row and row[0] is not None else None
 
+def get_latest_editable_round():
+    row = query_db(
+        """
+        SELECT MAX(r.Id)
+        FROM Rounds r
+        WHERE r.Played = 1
+           OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id)
+        """,
+        one=True,
+    )
+    return row[0] if row and row[0] is not None else None
+
 def upsert_setting(cur, name, value, description=None):
     cur.execute("UPDATE Settings SET Value = ? WHERE Name = ?", (str(value), name))
     if cur.rowcount > 0:
@@ -485,14 +497,20 @@ def competition_create():
 def round_editor():
     selected_round = request.args.get("round_id", type=int)
     if selected_round is None:
-        selected_round = get_latest_played_round()
+        selected_round = get_latest_editable_round()
 
     rounds = query_db(
-        "SELECT Id, Date FROM Rounds WHERE Played = 1 ORDER BY Id DESC"
+        """
+        SELECT r.Id, r.Date, r.Played
+        FROM Rounds r
+        WHERE r.Played = 1
+           OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id)
+        ORDER BY r.Id DESC
+        """
     )
-    played_round_ids = {r[0] for r in rounds}
-    if selected_round not in played_round_ids:
-        selected_round = get_latest_played_round()
+    editable_round_ids = {r[0] for r in rounds}
+    if selected_round not in editable_round_ids:
+        selected_round = get_latest_editable_round()
 
     if selected_round is None:
         return render_template(
@@ -500,12 +518,15 @@ def round_editor():
             round_id=None,
             rounds=rounds,
             date=None,
+            round_played=None,
             players=[],
             reasons=[],
             pairings=[],
+            present_players=[],
+            unpaired_present_players=[],
         )
 
-    date = query_db("SELECT Date FROM Rounds WHERE Id = ?", (selected_round,), one=True)
+    round_meta = query_db("SELECT Date, Played FROM Rounds WHERE Id = ?", (selected_round,), one=True)
     rows = query_db(
         """
         SELECT p.Id, p.Name, pr.Present, pr.ReasonAbsentId, r.Name
@@ -562,12 +583,14 @@ def round_editor():
     unpaired_present_players = [
         p for p in present_players if str(p["id"]) not in paired_ids
     ]
-    round_date = date[0] if date else "-"
+    round_date = round_meta[0] if round_meta else "-"
+    round_played = round_meta[1] if round_meta else 0
     return render_template(
         "round_editor.html",
         round_id=selected_round,
         rounds=rounds,
         date=round_date,
+        round_played=round_played,
         players=players,
         reasons=reasons,
         pairings=pairings,
@@ -580,9 +603,18 @@ def round_editor_update_presence():
     round_id = request.form.get("round_id", type=int)
     if round_id is None:
         return jsonify({"success": False, "error": "Missing round id"}), 400
-    is_played = query_db("SELECT Played FROM Rounds WHERE Id = ?", (round_id,), one=True)
-    if not is_played or is_played[0] != 1:
-        return jsonify({"success": False, "error": "Only played rounds can be edited here"}), 400
+    editable_round = query_db(
+        """
+        SELECT r.Id
+        FROM Rounds r
+        WHERE r.Id = ?
+          AND (r.Played = 1 OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id))
+        """,
+        (round_id,),
+        one=True,
+    )
+    if not editable_round:
+        return jsonify({"success": False, "error": "Only played rounds or rounds with pairings can be edited here"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -618,16 +650,9 @@ def round_editor_update_result():
     if not pairing_id:
         return jsonify({"success": False, "error": "Missing pairing id"}), 400
 
-    pairing_round = query_db(
-        """SELECT r.Played
-           FROM Pairings p
-           INNER JOIN Rounds r ON p.RoundId = r.Id
-           WHERE p.Id = ?""",
-        (pairing_id,),
-        one=True,
-    )
-    if not pairing_round or pairing_round[0] != 1:
-        return jsonify({"success": False, "error": "Only played rounds can be edited here"}), 400
+    pairing_round = query_db("SELECT RoundId FROM Pairings WHERE Id = ?", (pairing_id,), one=True)
+    if not pairing_round:
+        return jsonify({"success": False, "error": "Pairing not found"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -655,9 +680,18 @@ def round_editor_swap_players():
     if str(player_a_id) == str(player_b_id):
         return jsonify({"success": False, "error": "Select two different players"}), 400
 
-    round_row = query_db("SELECT Played FROM Rounds WHERE Id = ?", (round_id,), one=True)
-    if not round_row or round_row[0] != 1:
-        return jsonify({"success": False, "error": "Only played rounds can be edited here"}), 400
+    round_row = query_db(
+        """
+        SELECT r.Id
+        FROM Rounds r
+        WHERE r.Id = ?
+          AND EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id)
+        """,
+        (round_id,),
+        one=True,
+    )
+    if not round_row:
+        return jsonify({"success": False, "error": "Round has no pairings to edit"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()

@@ -4,8 +4,11 @@
   <h2>Ronde Aanpassen</h2>
   {% if round_id %}
     <p>Bewerk ronde {{ round_id }} ({{ date }}). Dit past alleen punten aan, niet latere indelingen.</p>
+    {% if round_played == 0 %}
+      <p>Deze ronde is nog niet definitief opgeslagen; je kunt de reeds ingedeelde partijen en resultaten hier aanpassen.</p>
+    {% endif %}
   {% else %}
-    <p>Er zijn nog geen gespeelde rondes beschikbaar.</p>
+    <p>Er zijn nog geen rondes met pairings beschikbaar.</p>
   {% endif %}
 
   <form method="GET" action="/round-editor">
@@ -13,7 +16,7 @@
     <select name="round_id" id="round_id" onchange="this.form.submit()">
       {% for r in rounds %}
         <option value="{{ r[0] }}" {% if r[0] == round_id %}selected{% endif %}>
-          Ronde {{ r[0] }} - {{ r[1] }}
+          Ronde {{ r[0] }} - {{ r[1] }} {% if r[2] == 0 %}(open){% endif %}
         </option>
       {% endfor %}
     </select>
