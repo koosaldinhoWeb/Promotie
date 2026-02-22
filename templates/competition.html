@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Competitie Beheer</h2>
+
+  <h3>Nieuwe competitie maken</h3>
+  <form method="POST" action="/competition/create" id="competition-form">
+    <p>
+      <label for="number_of_rounds">1. Number of rounds:</label>
+      <input type="number" id="number_of_rounds" name="number_of_rounds" min="1" value="{{ number_of_rounds if number_of_rounds > 0 else 1 }}" required>
+    </p>
+    <p>
+      <label for="non_compete_rounds">3. Number rounds between identical pairing:</label>
+      <input type="number" id="non_compete_rounds" name="non_compete_rounds" min="0" value="{{ non_compete }}" required>
+    </p>
+
+    <h4>2. Set a date per round</h4>
+    <div id="round-dates"></div>
+
+    <button type="submit" class="btn">Create competition</button>
+  </form>
+
+  <h3>Verwijder alle vorige ronde-resultaten</h3>
+  <form method="POST" action="/competition/reset-results" onsubmit="return confirm('Alle vorige resultaten worden verwijderd. Doorgaan?');">
+    <button type="submit" class="btn">Delete all previous round results</button>
+  </form>
+
+  <h3>Huidige planning</h3>
+  <p>Competition year: {{ competition_year }}</p>
+  <table>
+    <thead>
+      <tr><th>Ronde</th><th>Datum</th><th>Gespeeld</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rounds %}
+      <tr>
+        <td>{{ r[0] }}</td>
+        <td>{{ r[1] }}</td>
+        <td>{% if r[2] == 1 %}Ja{% else %}Nee{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    const numberInput = document.getElementById("number_of_rounds");
+    const datesContainer = document.getElementById("round-dates");
+    const existingDates = {{ round_dates|tojson }};
+
+    function renderDateFields() {
+      const count = parseInt(numberInput.value || "0", 10);
+      datesContainer.innerHTML = "";
+
+      for (let i = 1; i <= count; i += 1) {
+        const wrapper = document.createElement("p");
+        const label = document.createElement("label");
+        label.setAttribute("for", `round_date_${i}`);
+        label.textContent = `Round ${i} date:`;
+
+        const input = document.createElement("input");
+        input.type = "date";
+        input.id = `round_date_${i}`;
+        input.name = "round_date";
+        input.required = true;
+        if (existingDates[i - 1]) {
+          input.value = existingDates[i - 1];
+        }
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(input);
+        datesContainer.appendChild(wrapper);
+      }
+    }
+
+    numberInput.addEventListener("change", renderDateFields);
+    renderDateFields();
+  </script>
+{% endblock %}
