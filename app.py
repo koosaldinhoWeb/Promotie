@@ -513,12 +513,14 @@ def round_editor():
         selected_round = get_latest_editable_round()
 
     if selected_round is None:
+        group_numbers = query_db("SELECT DISTINCT GroupNumber FROM Players ORDER BY GroupNumber ASC")
         return render_template(
             "round_editor.html",
             round_id=None,
             rounds=rounds,
             date=None,
             round_played=None,
+            group_numbers=[g[0] for g in group_numbers],
             players=[],
             reasons=[],
             pairings=[],
@@ -527,6 +529,7 @@ def round_editor():
         )
 
     round_meta = query_db("SELECT Date, Played FROM Rounds WHERE Id = ?", (selected_round,), one=True)
+    group_numbers = query_db("SELECT DISTINCT GroupNumber FROM Players ORDER BY GroupNumber ASC")
     rows = query_db(
         """
         SELECT p.Id, p.Name, pr.Present, pr.ReasonAbsentId, r.Name
@@ -549,7 +552,10 @@ def round_editor():
     ]
     reasons = query_db("SELECT Id, Name FROM Results ORDER BY Id ASC")
     pairing_rows = query_db(
-        """SELECT b.Name, c.Name, a.GroupNumber, a.ResultsType, a.Id, a.PlayerId1, a.PlayerId2
+        """SELECT
+               COALESCE(b.Name, CASE WHEN a.PlayerId1 = 'NONE' THEN 'None' ELSE a.PlayerId1 END) as Player1Name,
+               COALESCE(c.Name, CASE WHEN a.PlayerId2 = 'NONE' THEN 'None' ELSE a.PlayerId2 END) as Player2Name,
+               a.GroupNumber, a.ResultsType, a.Id, a.PlayerId1, a.PlayerId2
            FROM Pairings a
            LEFT JOIN Players b ON a.PlayerId1 = b.Id
            LEFT JOIN Players c ON a.PlayerId2 = c.Id
@@ -566,6 +572,7 @@ def round_editor():
             "Id": r[4],
             "player1_id": r[5],
             "player2_id": r[6],
+            "has_placeholder": (r[5] == "NONE" or r[6] == "NONE"),
         }
         for r in pairing_rows
     ]
@@ -591,12 +598,39 @@ def round_editor():
         rounds=rounds,
         date=round_date,
         round_played=round_played,
+        group_numbers=[g[0] for g in group_numbers],
         players=players,
         reasons=reasons,
         pairings=pairings,
         present_players=present_players,
         unpaired_present_players=unpaired_present_players,
     )
+
+@app.route("/round-editor/add-pairing", methods=["POST"])
+def round_editor_add_pairing():
+    round_id = request.form.get("round_id", type=int)
+    group_number = request.form.get("group_number", type=int)
+    if round_id is None or group_number is None:
+        return jsonify({"success": False, "error": "Missing round or group"}), 400
+    if group_number not in (1, 2):
+        return jsonify({"success": False, "error": "Group must be 1 or 2"}), 400
+
+    round_row = query_db("SELECT Id FROM Rounds WHERE Id = ?", (round_id,), one=True)
+    if not round_row:
+        return jsonify({"success": False, "error": "Round not found"}), 400
+
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO Pairings (PlayerId1, PlayerId2, RoundId, GroupNumber, ResultsType)
+        VALUES ('NONE', 'NONE', ?, ?, NULL)
+        """,
+        (round_id, group_number),
+    )
+    conn.commit()
+    conn.close()
+    return redirect(f"/round-editor?round_id={round_id}")
 
 @app.route("/round-editor/update-presence", methods=["POST"])
 def round_editor_update_presence():
@@ -653,6 +687,11 @@ def round_editor_update_result():
     pairing_round = query_db("SELECT RoundId FROM Pairings WHERE Id = ?", (pairing_id,), one=True)
     if not pairing_round:
         return jsonify({"success": False, "error": "Pairing not found"}), 400
+    pairing_players = query_db("SELECT PlayerId1, PlayerId2 FROM Pairings WHERE Id = ?", (pairing_id,), one=True)
+    if not pairing_players:
+        return jsonify({"success": False, "error": "Pairing not found"}), 400
+    if pairing_players[0] == "NONE" or pairing_players[1] == "NONE":
+        return jsonify({"success": False, "error": "Fill both players before setting a result"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -800,8 +839,44 @@ def round_editor_swap_players():
             (round_id, out_id),
         )
     else:
-        conn.close()
-        return jsonify({"success": False, "error": "Neither selected player is currently in a pairing"}), 400
+        cur.execute(
+            """SELECT Id, PlayerId1, PlayerId2, GroupNumber
+               FROM Pairings
+               WHERE RoundId = ?
+                 AND GroupNumber = ?
+                 AND (PlayerId1 = 'NONE' OR PlayerId2 = 'NONE')
+               ORDER BY Id ASC
+               LIMIT 1""",
+            (round_id, group_a[0]),
+        )
+        empty_pairing = cur.fetchone()
+        if not empty_pairing:
+            conn.close()
+            return jsonify({"success": False, "error": "No empty pairing slot found in this group"}), 400
+
+        row_id, p1, p2, _ = empty_pairing
+        candidates = [str(player_a_id), str(player_b_id)]
+        if p1 == "NONE" and candidates:
+            p1 = candidates.pop(0)
+        if p2 == "NONE" and candidates:
+            p2 = candidates.pop(0)
+
+        if candidates:
+            conn.close()
+            return jsonify({"success": False, "error": "Need two empty slots to place both players"}), 400
+
+        cur.execute(
+            "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
+            (p1, p2, row_id),
+        )
+        cur.execute(
+            "UPDATE Present SET Present = 1, ReasonAbsentId = NULL WHERE RoundId = ? AND PlayerId = ?",
+            (round_id, str(player_a_id)),
+        )
+        cur.execute(
+            "UPDATE Present SET Present = 1, ReasonAbsentId = NULL WHERE RoundId = ? AND PlayerId = ?",
+            (round_id, str(player_b_id)),
+        )
 
     conn.commit()
     conn.close()
