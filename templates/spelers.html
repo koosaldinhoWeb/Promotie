@@ -15,9 +15,15 @@
       <tr>
         <td>{{ p.name }}</td>
         <td>{{ p.rating }}</td>
-        <td>
-          <button>Bewerk</button>
-          <button>Verwijder</button>
+        <td class="player-actions">
+          <a class="btn" href="{{ url_for('edit_player', player_id=p.id) }}">Bewerk</a>
+          <form
+            method="POST"
+            action="{{ url_for('delete_player', player_id=p.id) }}"
+            onsubmit="return confirm('Weet je zeker dat je {{ p.name|e }} wilt verwijderen?');"
+          >
+            <button type="submit" class="btn btn-danger">Verwijder</button>
+          </form>
         </td>
       </tr>
       {% endfor %}

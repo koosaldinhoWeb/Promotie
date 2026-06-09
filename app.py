@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-from flask import Flask, render_template,request, jsonify,redirect
+from flask import Flask, abort, render_template, request, jsonify, redirect, url_for
 from genereer_rondes import BuildNextRound,SaveResultsToPlayers,RefreshPlayersResults
 
 app = Flask(__name__)
@@ -55,12 +55,83 @@ def home():
 
 @app.route("/spelers")
 def spelers():
-    rows = query_db("SELECT id, name, rating FROM Players ORDER BY Name ASC")
+    rows = query_db(
+        "SELECT id, name, rating FROM Players WHERE Active = 1 ORDER BY Name ASC"
+    )
     
     # Convert tuples -> dict for easier template handling
     players = [{"id": r[0], "name": r[1], "rating": r[2]} for r in rows]
     
     return render_template("spelers.html", players=players)
+
+@app.route("/spelers/<player_id>/edit", methods=["GET", "POST"])
+def edit_player(player_id):
+    player = query_db(
+        "SELECT Id, Name, Rating FROM Players WHERE Id = ? AND Active = 1",
+        (player_id,),
+        one=True,
+    )
+    if not player:
+        abort(404)
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        rating_value = request.form.get("rating", "").strip()
+
+        if not name:
+            return render_template(
+                "edit_player.html",
+                player={"id": player[0], "name": name, "rating": rating_value},
+                error="Naam is verplicht.",
+            ), 400
+
+        try:
+            rating = int(rating_value) if rating_value else None
+        except ValueError:
+            return render_template(
+                "edit_player.html",
+                player={"id": player[0], "name": name, "rating": rating_value},
+                error="Rating moet een geheel getal zijn.",
+            ), 400
+
+        conn = sqlite3.connect(DATABASE)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE Players
+            SET Name = ?, Rating = ?, Last_Update = CURRENT_TIMESTAMP
+            WHERE Id = ? AND Active = 1
+            """,
+            (name, rating, player_id),
+        )
+        conn.commit()
+        conn.close()
+        return redirect(url_for("spelers"))
+
+    return render_template(
+        "edit_player.html",
+        player={"id": player[0], "name": player[1], "rating": player[2]},
+    )
+
+@app.route("/spelers/<player_id>/delete", methods=["POST"])
+def delete_player(player_id):
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE Players
+        SET Active = 0, Last_Update = CURRENT_TIMESTAMP
+        WHERE Id = ? AND Active = 1
+        """,
+        (player_id,),
+    )
+    if cur.rowcount == 0:
+        conn.close()
+        abort(404)
+
+    conn.commit()
+    conn.close()
+    return redirect(url_for("spelers"))
 
 @app.route("/player-overview")
 def player_overview():
