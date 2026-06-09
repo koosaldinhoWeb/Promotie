@@ -7,6 +7,17 @@
 <body>
   <header>
     <h1>SV Promotie Style Club</h1>
+    <form method="POST" action="{{ url_for('select_competition') }}" class="competition-selector">
+      <input type="hidden" name="next" value="{{ request.full_path }}">
+      <label for="competition_id">Competitie:</label>
+      <select id="competition_id" name="competition_id" onchange="this.form.submit()">
+        {% for competition in competitions %}
+          <option value="{{ competition[0] }}" {% if competition[0] == current_competition_id %}selected{% endif %}>
+            {{ competition[1] }} ({{ competition[2] }})
+          </option>
+        {% endfor %}
+      </select>
+    </form>
     <nav>
       <a href="/">Home</a>
       <a href="/spelers">Spelers</a>
@@ -21,7 +32,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer>
-    <p>&copy; 2025 - Chess Club</p>
+    <p>&copy; 2026 - Chess Club</p>
   </footer>
 </body>
 </html>

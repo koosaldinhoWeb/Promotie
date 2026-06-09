@@ -20,6 +20,18 @@ nav {
   margin-top: 10px;
 }
 
+.competition-selector {
+  margin-top: 12px;
+}
+
+.competition-selector label {
+  font-weight: bold;
+}
+
+.competition-selector select {
+  padding: 5px;
+}
+
 nav a {
   color: #fff;
   text-decoration: none;

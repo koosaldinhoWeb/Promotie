@@ -174,10 +174,77 @@ def get_or_create_player(
     return players[key]
 
 
-def get_or_create_round(cur: sqlite3.Cursor, round_data: RoundData) -> int:
+def get_or_create_competition(
+    cur: sqlite3.Cursor, name: str, year: int, number_of_rounds: int
+) -> int:
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS Competitions(
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Name TEXT NOT NULL,
+            Year INTEGER NOT NULL,
+            NumberOfRounds INTEGER NOT NULL,
+            NumberOfNonCompete INTEGER NOT NULL DEFAULT 0,
+            Active BOOLEAN NOT NULL DEFAULT 1,
+            Last_Update DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    round_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(Rounds)").fetchall()
+    }
+    if "CompetitionId" not in round_columns:
+        cur.execute("ALTER TABLE Rounds ADD COLUMN CompetitionId INTEGER")
+
+    competition_count = cur.execute("SELECT COUNT(*) FROM Competitions").fetchone()[0]
+    legacy_rounds = cur.execute(
+        "SELECT COUNT(*), MIN(Year) FROM Rounds WHERE CompetitionId IS NULL"
+    ).fetchone()
+    if competition_count == 0 and legacy_rounds[0] > 0:
+        legacy_year = legacy_rounds[1] or year
+        cur.execute(
+            """
+            INSERT INTO Competitions
+                (Name, Year, NumberOfRounds, NumberOfNonCompete)
+            VALUES (?, ?, ?, 0)
+            """,
+            (f"Competitie {legacy_year}", legacy_year, legacy_rounds[0]),
+        )
+
+    default_competition = cur.execute(
+        "SELECT Id FROM Competitions ORDER BY Id LIMIT 1"
+    ).fetchone()
+    if default_competition:
+        cur.execute(
+            "UPDATE Rounds SET CompetitionId = ? WHERE CompetitionId IS NULL",
+            (default_competition[0],),
+        )
+
     row = cur.execute(
-        "SELECT Id FROM Rounds WHERE Year = ? AND RoundNumber = ?",
-        (round_data.season_year, round_data.round_number),
+        "SELECT Id FROM Competitions WHERE Name = ? AND Year = ? ORDER BY Id LIMIT 1",
+        (name, year),
+    ).fetchone()
+    if row:
+        return row[0]
+
+    cur.execute(
+        """
+        INSERT INTO Competitions
+            (Name, Year, NumberOfRounds, NumberOfNonCompete)
+        VALUES (?, ?, ?, 0)
+        """,
+        (name, year, number_of_rounds),
+    )
+    return cur.lastrowid
+
+
+def get_or_create_round(
+    cur: sqlite3.Cursor, round_data: RoundData, competition_id: int
+) -> int:
+    row = cur.execute(
+        """SELECT Id FROM Rounds
+           WHERE CompetitionId = ? AND RoundNumber = ?""",
+        (competition_id, round_data.round_number),
     ).fetchone()
     if row:
         round_id = row[0]
@@ -190,8 +257,9 @@ def get_or_create_round(cur: sqlite3.Cursor, round_data: RoundData) -> int:
     round_id = cur.execute("SELECT COALESCE(MAX(Id), 0) + 1 FROM Rounds").fetchone()[0]
     cur.execute(
         """
-        INSERT INTO Rounds (Id, Period, RoundNumber, Year, Date, Played)
-        VALUES (?, ?, ?, ?, ?, 1)
+        INSERT INTO Rounds
+            (Id, Period, RoundNumber, Year, Date, Played, CompetitionId)
+        VALUES (?, ?, ?, ?, ?, 1, ?)
         """,
         (
             round_id,
@@ -199,6 +267,7 @@ def get_or_create_round(cur: sqlite3.Cursor, round_data: RoundData) -> int:
             round_data.round_number,
             round_data.season_year,
             f"{round_data.date.day}-{round_data.date.month}-{round_data.date.year}",
+            competition_id,
         ),
     )
     return round_id
@@ -219,6 +288,11 @@ def import_rounds(args: argparse.Namespace) -> int:
 
     conn = sqlite3.connect(args.database)
     cur = conn.cursor()
+    competition_year = rounds[0].season_year
+    competition_name = args.competition_name or f"Import {competition_year}"
+    competition_id = get_or_create_competition(
+        cur, competition_name, competition_year, len(rounds)
+    )
     players = load_players(cur)
     missing: set[str] = set()
 
@@ -228,7 +302,7 @@ def import_rounds(args: argparse.Namespace) -> int:
 
     try:
         for round_data in rounds:
-            round_id = get_or_create_round(cur, round_data)
+            round_id = get_or_create_round(cur, round_data, competition_id)
             cur.execute("DELETE FROM Pairings WHERE RoundId = ?", (round_id,))
             cur.execute("DELETE FROM Present WHERE RoundId = ?", (round_id,))
 
@@ -275,7 +349,7 @@ def import_rounds(args: argparse.Namespace) -> int:
 
         if args.commit:
             conn.commit()
-            RefreshPlayersResults()
+            RefreshPlayersResults(args.database)
         else:
             conn.rollback()
     finally:
@@ -302,6 +376,10 @@ def main() -> int:
     parser.add_argument("--input", default=DEFAULT_INPUT, help="Text file with round results.")
     parser.add_argument("--database", default=DATABASE, help="SQLite database path.")
     parser.add_argument("--encoding", default="utf-8-sig", help="Input file encoding.")
+    parser.add_argument(
+        "--competition-name",
+        help="Competition name. Defaults to 'Import <season year>'.",
+    )
     parser.add_argument("--create-missing-players", action="store_true", help="Create unknown players as inactive.")
     parser.add_argument("--commit", action="store_true", help="Write changes. Without this the script is a dry run.")
     return import_rounds(parser.parse_args())

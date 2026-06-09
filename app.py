@@ -1,11 +1,72 @@
 import sqlite3
+import os
 from datetime import datetime
-from flask import Flask, abort, render_template, request, jsonify, redirect, url_for
+from flask import Flask, abort, render_template, request, jsonify, redirect, session, url_for
 from genereer_rondes import BuildNextRound,SaveResultsToPlayers,RefreshPlayersResults
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "development-secret-change-in-production")
 
-DATABASE = "database.db"
+DATABASE = os.environ.get("DATABASE", "database.db")
+
+def ensure_competition_schema():
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS Competitions(
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Name TEXT NOT NULL,
+            Year INTEGER NOT NULL,
+            NumberOfRounds INTEGER NOT NULL,
+            NumberOfNonCompete INTEGER NOT NULL DEFAULT 0,
+            Active BOOLEAN NOT NULL DEFAULT 1,
+            Last_Update DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    round_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(Rounds)").fetchall()
+    }
+    if "CompetitionId" not in round_columns:
+        cur.execute("ALTER TABLE Rounds ADD COLUMN CompetitionId INTEGER")
+
+    competition_count = cur.execute("SELECT COUNT(*) FROM Competitions").fetchone()[0]
+    if competition_count == 0:
+        settings = dict(
+            cur.execute(
+                "SELECT Name, Value FROM Settings WHERE Name IN "
+                "('NumberOfPeriodRounds', 'NumberOfNonCompete', 'Year')"
+            ).fetchall()
+        )
+        round_count = cur.execute("SELECT COUNT(*) FROM Rounds").fetchone()[0]
+        year_row = cur.execute("SELECT MIN(Year) FROM Rounds").fetchone()
+        year = int(settings.get("Year") or (year_row[0] if year_row else 0) or datetime.now().year)
+        number_of_rounds = int(settings.get("NumberOfPeriodRounds") or round_count or 1)
+        non_compete = int(settings.get("NumberOfNonCompete") or 0)
+        cur.execute(
+            """
+            INSERT INTO Competitions
+                (Name, Year, NumberOfRounds, NumberOfNonCompete)
+            VALUES (?, ?, ?, ?)
+            """,
+            (f"Competitie {year}", year, number_of_rounds, non_compete),
+        )
+
+    default_competition_id = cur.execute(
+        "SELECT Id FROM Competitions ORDER BY Id LIMIT 1"
+    ).fetchone()[0]
+    cur.execute(
+        "UPDATE Rounds SET CompetitionId = ? WHERE CompetitionId IS NULL",
+        (default_competition_id,),
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rounds_competition ON Rounds(CompetitionId, Id)"
+    )
+    conn.commit()
+    conn.close()
+
+ensure_competition_schema()
 
 def query_db(query, args=(), one=False):
     conn = sqlite3.connect(DATABASE)
@@ -16,22 +77,84 @@ def query_db(query, args=(), one=False):
     return rows if not one else rows[0] if rows else None
 
 
-def get_latest_round_with_pairings():
-    row = query_db("SELECT MAX(RoundId) FROM Pairings", one=True)
+def get_current_competition_id():
+    requested_id = request.values.get("competition_id", type=int)
+    if requested_id is None and request.is_json:
+        requested_id = (request.get_json(silent=True) or {}).get("competition_id")
+        try:
+            requested_id = int(requested_id) if requested_id is not None else None
+        except (TypeError, ValueError):
+            requested_id = None
+
+    if requested_id is not None:
+        exists = query_db(
+            "SELECT Id FROM Competitions WHERE Id = ? AND Active = 1",
+            (requested_id,),
+            one=True,
+        )
+        if exists:
+            session["competition_id"] = requested_id
+
+    selected_id = session.get("competition_id")
+    selected = query_db(
+        "SELECT Id FROM Competitions WHERE Id = ? AND Active = 1",
+        (selected_id,),
+        one=True,
+    ) if selected_id is not None else None
+    if selected:
+        return selected[0]
+
+    first = query_db(
+        "SELECT Id FROM Competitions WHERE Active = 1 ORDER BY Id DESC LIMIT 1",
+        one=True,
+    )
+    if not first:
+        abort(500, "No competition is configured")
+    session["competition_id"] = first[0]
+    return first[0]
+
+@app.context_processor
+def competition_context():
+    competitions = query_db(
+        "SELECT Id, Name, Year FROM Competitions WHERE Active = 1 ORDER BY Year DESC, Id DESC"
+    )
+    competition_id = get_current_competition_id()
+    current = next((row for row in competitions if row[0] == competition_id), None)
+    return {
+        "competitions": competitions,
+        "current_competition": current,
+        "current_competition_id": competition_id,
+    }
+
+def get_latest_round_with_pairings(competition_id):
+    row = query_db(
+        """SELECT MAX(p.RoundId)
+           FROM Pairings p
+           INNER JOIN Rounds r ON p.RoundId = r.Id
+           WHERE r.CompetitionId = ?""",
+        (competition_id,),
+        one=True,
+    )
     return row[0] if row and row[0] is not None else None
 
-def get_latest_played_round():
-    row = query_db("SELECT MAX(Id) FROM Rounds WHERE Played = 1", one=True)
+def get_latest_played_round(competition_id):
+    row = query_db(
+        "SELECT MAX(Id) FROM Rounds WHERE Played = 1 AND CompetitionId = ?",
+        (competition_id,),
+        one=True,
+    )
     return row[0] if row and row[0] is not None else None
 
-def get_latest_editable_round():
+def get_latest_editable_round(competition_id):
     row = query_db(
         """
         SELECT MAX(r.Id)
         FROM Rounds r
-        WHERE r.Played = 1
-           OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id)
+        WHERE r.CompetitionId = ?
+          AND (r.Played = 1
+           OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id))
         """,
+        (competition_id,),
         one=True,
     )
     return row[0] if row and row[0] is not None else None
@@ -52,6 +175,22 @@ def upsert_setting(cur, name, value, description=None):
 @app.route("/")
 def home():
     return render_template("home.html")
+
+@app.route("/competition/select", methods=["POST"])
+def select_competition():
+    competition_id = request.form.get("competition_id", type=int)
+    competition = query_db(
+        "SELECT Id FROM Competitions WHERE Id = ? AND Active = 1",
+        (competition_id,),
+        one=True,
+    )
+    if not competition:
+        abort(404)
+    session["competition_id"] = competition_id
+    next_url = request.form.get("next", "")
+    if not next_url.startswith("/"):
+        next_url = url_for("home")
+    return redirect(next_url)
 
 @app.route("/spelers")
 def spelers():
@@ -135,17 +274,29 @@ def delete_player(player_id):
 
 @app.route("/player-overview")
 def player_overview():
+    competition_id = get_current_competition_id()
     # Get all players and their presence
-    date = query_db("SELECT Date FROM Rounds WHERE Played = 0 ORDER BY ID ASC LIMIT 1", one=True)
+    active_round = query_db(
+        """SELECT Id, Date FROM Rounds
+           WHERE Played = 0 AND CompetitionId = ?
+           ORDER BY RoundNumber ASC LIMIT 1""",
+        (competition_id,),
+        one=True,
+    )
+    if not active_round:
+        return render_template(
+            "player_overview.html", players=[], reasons=[], date="-"
+        )
+    active_round_id, active_round_date = active_round
 
     rows = query_db("""
         SELECT p.Id, p.Name, pr.Present, pr.ReasonAbsentId, r.Name, pr.RoundId
         FROM Players p
         LEFT JOIN Present pr ON p.Id = pr.PlayerId
         LEFT JOIN Results r ON pr.ReasonAbsentId = r.Id
-        WHERE pr.RoundId = (SELECT MIN(Id) FROM Rounds WHERE Played = 0)
+        WHERE pr.RoundId = ?
         ORDER BY p.Name ASC
-    """)
+    """, (active_round_id,))
     players = [
         {
             "id": r[0],
@@ -161,32 +312,60 @@ def player_overview():
     # Get all possible results/reasons
     reasons = query_db("SELECT Id, Name FROM Results ORDER BY Id ASC")
 
-    return render_template("player_overview.html", players=players, reasons=reasons, date = date[0])
+    return render_template(
+        "player_overview.html",
+        players=players,
+        reasons=reasons,
+        date=active_round_date,
+    )
 
 @app.route("/update-presence", methods=["POST"])
 def update_presence():
+    competition_id = get_current_competition_id()
+    active_round = query_db(
+        """SELECT Id FROM Rounds
+           WHERE Played = 0 AND CompetitionId = ?
+           ORDER BY RoundNumber ASC LIMIT 1""",
+        (competition_id,),
+        one=True,
+    )
+    if not active_round:
+        return jsonify({"success": False, "error": "No active round found"}), 400
+    active_round_id = active_round[0]
+
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
     for key, value in request.form.items():
-        print(key)
         if key.startswith("present_"):
             player_id = key.split("_")[1]
             present = int(value)
             reason_key = f"reason_{player_id}"
             reason_id = request.form.get(reason_key, None)
-            # Update the Present table for this player
-            conn = sqlite3.connect(DATABASE)
-            cur = conn.cursor()
             if present == 1:
-                cur.execute("UPDATE Present SET Present=?, ReasonAbsentId=NULL WHERE PlayerId=? and RoundId =(SELECT Id FROM Rounds WHERE Played = 0 ORDER BY Id ASC LIMIT 1) ", (present, player_id))
+                cur.execute(
+                    "UPDATE Present SET Present=?, ReasonAbsentId=NULL WHERE PlayerId=? AND RoundId=?",
+                    (present, player_id, active_round_id),
+                )
             else:
-                cur.execute("UPDATE Present SET Present=?, ReasonAbsentId=? WHERE PlayerId=? and RoundId =(SELECT Id FROM Rounds WHERE Played = 0 ORDER BY Id ASC LIMIT 1)", (present, reason_id, player_id))
-            conn.commit()
-            conn.close()
+                cur.execute(
+                    "UPDATE Present SET Present=?, ReasonAbsentId=? WHERE PlayerId=? AND RoundId=?",
+                    (present, reason_id, player_id, active_round_id),
+                )
+    conn.commit()
+    conn.close()
     return redirect("/player-overview")
 
 
 @app.route("/confirm-attendance", methods=["POST"])
 def confirm_attendance():
-    active_round = query_db("SELECT MIN(Id) FROM Rounds WHERE Played = 0", one=True)
+    competition_id = get_current_competition_id()
+    active_round = query_db(
+        """SELECT Id FROM Rounds
+           WHERE Played = 0 AND CompetitionId = ?
+           ORDER BY RoundNumber ASC LIMIT 1""",
+        (competition_id,),
+        one=True,
+    )
     if not active_round or active_round[0] is None:
         return jsonify({"success": False, "error": "No active round found"}), 400
 
@@ -217,23 +396,33 @@ def confirm_attendance():
     conn.commit()
     conn.close()
 
-    BuildNextRound()
+    BuildNextRound(competition_id, DATABASE)
     return redirect("/genereer-ronde")
 
 @app.route("/generate-round", methods=["POST"])
 def generate_round():
-    rows = query_db("""SELECT COUNT(*) FROM Pairings where ResultsType is NULL""")
+    competition_id = get_current_competition_id()
+    rows = query_db(
+        """SELECT COUNT(*)
+           FROM Pairings p
+           INNER JOIN Rounds r ON p.RoundId = r.Id
+           WHERE p.ResultsType IS NULL AND r.CompetitionId = ?""",
+        (competition_id,),
+    )
     if rows[0][0] > 0:
          return jsonify({"success": False, "error": "Missing data"}), 400
-    BuildNextRound()
+    BuildNextRound(competition_id, DATABASE)
     return redirect("/genereer-ronde")
 
 @app.route("/genereer-ronde")
 def genereer_ronde():
+    competition_id = get_current_competition_id()
     rows = query_db("""SELECT b.Name, c.Name, RoundId, a.GroupNumber,a.Id FROM TempPairing a
                     LEFT JOIN Players b ON a.PlayerId1 = b.Id
                     LEFT JOIN Players c ON a.PlayerId2 = c.Id
-                    ORDER BY a.GroupNumber ASC""")
+                    INNER JOIN Rounds r ON a.RoundId = r.Id
+                    WHERE r.CompetitionId = ?
+                    ORDER BY a.GroupNumber ASC""", (competition_id,))
 
     pairings = [
         {"player1": r[0], "player2": r[1], "round": r[2], "group": r[3]," id": r[4]}
@@ -245,6 +434,7 @@ def genereer_ronde():
 
 @app.route("/swap-players", methods=["POST"])
 def swap_players():
+    competition_id = get_current_competition_id()
     data = request.json
     player_a_name = data.get("player_a")
     player_b_name = data.get("player_b")
@@ -259,9 +449,21 @@ def swap_players():
     # Fetch matches for both players
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
-    cur.execute("SELECT PlayerId1, PlayerId2, RoundId, GroupNumber,Id FROM TempPairing WHERE PlayerId1=? OR PlayerId2=?", (player_a, player_a))
+    cur.execute(
+        """SELECT t.PlayerId1, t.PlayerId2, t.RoundId, t.GroupNumber, t.Id
+           FROM TempPairing t
+           INNER JOIN Rounds r ON t.RoundId = r.Id
+           WHERE r.CompetitionId = ? AND (t.PlayerId1 = ? OR t.PlayerId2 = ?)""",
+        (competition_id, player_a, player_a),
+    )
     match_a = cur.fetchone()
-    cur.execute("SELECT PlayerId1, PlayerId2, RoundId, GroupNumber,Id FROM TempPairing WHERE PlayerId1=? OR PlayerId2=?", (player_b, player_b))
+    cur.execute(
+        """SELECT t.PlayerId1, t.PlayerId2, t.RoundId, t.GroupNumber, t.Id
+           FROM TempPairing t
+           INNER JOIN Rounds r ON t.RoundId = r.Id
+           WHERE r.CompetitionId = ? AND (t.PlayerId1 = ? OR t.PlayerId2 = ?)""",
+        (competition_id, player_b, player_b),
+    )
     match_b = cur.fetchone()
 
     if not match_a or not match_b:
@@ -319,9 +521,16 @@ def swap_players():
 
 @app.route("/finalize-round", methods=["POST"])
 def finalize_roundfromTemp():
+    competition_id = get_current_competition_id()
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
-    cur.execute("SELECT RoundId FROM TempPairing LIMIT 1")
+    cur.execute(
+        """SELECT t.RoundId FROM TempPairing t
+           INNER JOIN Rounds r ON t.RoundId = r.Id
+           WHERE r.CompetitionId = ?
+           LIMIT 1""",
+        (competition_id,),
+    )
     round_row = cur.fetchone()
     if not round_row:
         conn.close()
@@ -331,21 +540,31 @@ def finalize_roundfromTemp():
     cur.execute("DELETE FROM Pairings WHERE RoundId = ?", (round_id,))
     cur.execute("""
         INSERT INTO Pairings (PlayerId1, PlayerId2, RoundId, GroupNumber)
-        SELECT PlayerId1, PlayerId2, RoundId, GroupNumber FROM TempPairing
-    """)
-    cur.execute("DELETE FROM TempPairing")
+        SELECT PlayerId1, PlayerId2, RoundId, GroupNumber
+        FROM TempPairing
+        WHERE RoundId = ?
+    """, (round_id,))
+    cur.execute("DELETE FROM TempPairing WHERE RoundId = ?", (round_id,))
     conn.commit()
     conn.close()
     return redirect(f"/finalized_round?round_id={round_id}")
 
 @app.route("/finalized_round")
 def finalize_round():
+    competition_id = get_current_competition_id()
     selected_round = request.args.get("round_id", type=int)
     if selected_round is None:
-        selected_round = get_latest_round_with_pairings()
+        selected_round = get_latest_round_with_pairings(competition_id)
 
     if selected_round is None:
         return render_template("finalized-round.html", pairings=[], round_id=None)
+    round_exists = query_db(
+        "SELECT Id FROM Rounds WHERE Id = ? AND CompetitionId = ?",
+        (selected_round, competition_id),
+        one=True,
+    )
+    if not round_exists:
+        abort(404)
 
     rows = query_db(
         """SELECT b.Name, c.Name, RoundId, a.GroupNumber,a.ResultsType,a.Id FROM Pairings a
@@ -365,6 +584,7 @@ def finalize_round():
 
 @app.route("/update-result", methods=["POST"])
 def update_result():
+    competition_id = get_current_competition_id()
     data = request.json
     # print("Received data:", data)  # Add this line for debugging
     pairing_id = data.get("pairing_id")
@@ -372,6 +592,15 @@ def update_result():
     print(pairing_id)
     if not pairing_id:
         return jsonify({"success": False, "error": "Missing data"}), 400
+    pairing = query_db(
+        """SELECT p.Id FROM Pairings p
+           INNER JOIN Rounds r ON p.RoundId = r.Id
+           WHERE p.Id = ? AND r.CompetitionId = ?""",
+        (pairing_id, competition_id),
+        one=True,
+    )
+    if not pairing:
+        abort(404)
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -381,7 +610,7 @@ def update_result():
         cur.execute("UPDATE Pairings SET ResultsType=? WHERE Id=?", (int(result_id), pairing_id))
     conn.commit()
     conn.close()
-    RefreshPlayersResults()
+    RefreshPlayersResults(DATABASE)
 
     return jsonify({"success": True})
 
@@ -389,12 +618,20 @@ def update_result():
 
 @app.route("/save-results", methods=["POST"])
 def save_results():
+    competition_id = get_current_competition_id()
     round_id = request.form.get("round_id", type=int)
     if round_id is None:
-        round_id = get_latest_round_with_pairings()
+        round_id = get_latest_round_with_pairings(competition_id)
 
     if round_id is None:
         return jsonify({"success": False, "error": "No round found to save"}), 400
+    round_exists = query_db(
+        "SELECT Id FROM Rounds WHERE Id = ? AND CompetitionId = ?",
+        (round_id, competition_id),
+        one=True,
+    )
+    if not round_exists:
+        abort(404)
 
     missing = query_db(
         """
@@ -413,21 +650,30 @@ def save_results():
             {"success": False, "error": "Not all results are filled in for this round"}
         ), 400
 
-    SaveResultsToPlayers(round_id)
+    SaveResultsToPlayers(competition_id, round_id, DATABASE)
     return redirect(f"/finalized_round?round_id={round_id}")
 
 @app.route("/player_ranking")
 def ranking():    
-    RefreshPlayersResults()
-    date = query_db("SELECT Date FROM Rounds WHERE Played = 1 ORDER BY ID DESC LIMIT 1", one=True)
+    competition_id = get_current_competition_id()
+    RefreshPlayersResults(DATABASE)
+    date = query_db(
+        """SELECT Date FROM Rounds
+           WHERE Played = 1 AND CompetitionId = ?
+           ORDER BY RoundNumber DESC LIMIT 1""",
+        (competition_id,),
+        one=True,
+    )
 
     rows = query_db("""
         SELECT p.Id, p.Name,SUM(pr.Points) as TotalPoints,p.GroupNumber
         FROM Players p
         LEFT JOIN PlayersResults pr ON p.Id = pr.PlayerId
+          AND pr.RoundId IN (SELECT Id FROM Rounds WHERE CompetitionId = ?)
+        WHERE p.Active = 1
         GROUP BY p.Id, p.Name, p.GroupNumber
         ORDER BY p.GroupNumber ASC, TotalPoints DESC
-    """)
+    """, (competition_id,))
     
     players = [
         {
@@ -448,7 +694,8 @@ def ranking():
 
 @app.route("/speler/<int:player_id>")
 def player_results(player_id):
-    RefreshPlayersResults()
+    competition_id = get_current_competition_id()
+    RefreshPlayersResults(DATABASE)
     # Fetch player name
     player_name_row = query_db("SELECT name FROM Players WHERE id = ?", (player_id,), one=True)
     player_name = player_name_row[0] if player_name_row else f"Speler {player_id}"
@@ -460,9 +707,9 @@ def player_results(player_id):
         LEFT JOIN Players b ON a.OpponentId = b.Id
         LEFT JOIN Results c ON a.ResultId = c.Id
         LEFT JOIN Rounds d ON a.RoundId = d.Id
-        WHERE a.PlayerId = ?
+        WHERE a.PlayerId = ? AND d.CompetitionId = ?
         ORDER BY a.Roundid DESC
-    """, (player_id,))
+    """, (player_id, competition_id))
 
     results = [
         {"opponent": r[0], "result_id": r[1], "Points": r[2],"Date": r[3], "Period": r[4]}
@@ -473,31 +720,53 @@ def player_results(player_id):
 
 @app.route("/competition")
 def competition():
-    settings_rows = query_db(
-        "SELECT Name, Value FROM Settings WHERE Name IN ('NumberOfPeriodRounds', 'NumberOfNonCompete', 'Year')"
+    competition_id = get_current_competition_id()
+    competition_row = query_db(
+        """SELECT Name, Year, NumberOfRounds, NumberOfNonCompete
+           FROM Competitions WHERE Id = ?""",
+        (competition_id,),
+        one=True,
     )
-    settings_map = {name: value for name, value in settings_rows}
-    rounds = query_db("SELECT Id, Date, Played FROM Rounds ORDER BY Id ASC")
-    round_dates = [r[1] for r in rounds]
+    rounds = query_db(
+        """SELECT RoundNumber, Date, Played FROM Rounds
+           WHERE CompetitionId = ? ORDER BY RoundNumber ASC""",
+        (competition_id,),
+    )
     return render_template(
         "competition.html",
         rounds=rounds,
-        round_dates=round_dates,
-        number_of_rounds=int(settings_map.get("NumberOfPeriodRounds", 0) or 0),
-        non_compete=int(settings_map.get("NumberOfNonCompete", 0) or 0),
-        competition_year=settings_map.get("Year", "-"),
+        competition_name=competition_row[0],
+        number_of_rounds=competition_row[2],
+        non_compete=competition_row[3],
+        competition_year=competition_row[1],
     )
 
 @app.route("/competition/reset-results", methods=["POST"])
 def competition_reset_results():
+    competition_id = get_current_competition_id()
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
 
     # Clear all historical round outcomes while keeping competition structure.
-    cur.execute("DELETE FROM PlayersResults")
-    cur.execute("UPDATE Pairings SET ResultsType = NULL")
-    cur.execute("UPDATE Rounds SET Played = 0")
-    cur.execute("DELETE FROM TempPairing")
+    cur.execute(
+        "DELETE FROM PlayersResults WHERE RoundId IN "
+        "(SELECT Id FROM Rounds WHERE CompetitionId = ?)",
+        (competition_id,),
+    )
+    cur.execute(
+        "UPDATE Pairings SET ResultsType = NULL WHERE RoundId IN "
+        "(SELECT Id FROM Rounds WHERE CompetitionId = ?)",
+        (competition_id,),
+    )
+    cur.execute(
+        "UPDATE Rounds SET Played = 0 WHERE CompetitionId = ?",
+        (competition_id,),
+    )
+    cur.execute(
+        "DELETE FROM TempPairing WHERE RoundId IN "
+        "(SELECT Id FROM Rounds WHERE CompetitionId = ?)",
+        (competition_id,),
+    )
 
     conn.commit()
     conn.close()
@@ -505,6 +774,7 @@ def competition_reset_results():
 
 @app.route("/competition/create", methods=["POST"])
 def competition_create():
+    name = request.form.get("name", "").strip()
     number_of_rounds = request.form.get("number_of_rounds", type=int)
     non_compete = request.form.get("non_compete_rounds", type=int)
     round_dates = request.form.getlist("round_date")
@@ -524,23 +794,41 @@ def competition_create():
             return jsonify({"success": False, "error": f"Invalid date format: {d}"}), 400
 
     year = parsed_dates[0].year
+    if not name:
+        name = f"Competitie {year}"
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
 
-    # Start a clean competition.
-    cur.execute("DELETE FROM PlayersResults")
-    cur.execute("DELETE FROM Pairings")
-    cur.execute("DELETE FROM TempPairing")
-    cur.execute("DELETE FROM Present")
-    cur.execute("DELETE FROM Rounds")
+    cur.execute(
+        """
+        INSERT INTO Competitions
+            (Name, Year, NumberOfRounds, NumberOfNonCompete)
+        VALUES (?, ?, ?, ?)
+        """,
+        (name, year, number_of_rounds, non_compete),
+    )
+    competition_id = cur.lastrowid
+    first_round_id = cur.execute(
+        "SELECT COALESCE(MAX(Id), 0) + 1 FROM Rounds"
+    ).fetchone()[0]
 
     rounds_to_insert = [
-        (idx, "1", idx, year, parsed_dates[idx - 1].isoformat(), 0)
+        (
+            first_round_id + idx - 1,
+            "1",
+            idx,
+            year,
+            parsed_dates[idx - 1].isoformat(),
+            0,
+            competition_id,
+        )
         for idx in range(1, number_of_rounds + 1)
     ]
     cur.executemany(
-        "INSERT INTO Rounds (Id, Period, RoundNumber, Year, Date, Played) VALUES (?, ?, ?, ?, ?, ?)",
+        """INSERT INTO Rounds
+           (Id, Period, RoundNumber, Year, Date, Played, CompetitionId)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         rounds_to_insert,
     )
 
@@ -549,39 +837,39 @@ def competition_create():
     present_rows = [
         (str(player_id), round_id, 1, None)
         for (player_id,) in player_rows
-        for round_id in range(1, number_of_rounds + 1)
+        for round_id in range(first_round_id, first_round_id + number_of_rounds)
     ]
     cur.executemany(
         "INSERT INTO Present (PlayerId, RoundId, Present, ReasonAbsentId) VALUES (?, ?, ?, ?)",
         present_rows,
     )
 
-    upsert_setting(cur, "NumberOfPeriodRounds", number_of_rounds, "Number of rounds in competition")
-    upsert_setting(cur, "NumberOfNonCompete", non_compete, "Rounds between identical pairings")
-    upsert_setting(cur, "Year", year, "Year the competition started in")
-
     conn.commit()
     conn.close()
+    session["competition_id"] = competition_id
     return redirect("/competition")
 
 @app.route("/round-editor")
 def round_editor():
+    competition_id = get_current_competition_id()
     selected_round = request.args.get("round_id", type=int)
     if selected_round is None:
-        selected_round = get_latest_editable_round()
+        selected_round = get_latest_editable_round(competition_id)
 
     rounds = query_db(
         """
         SELECT r.Id, r.Date, r.Played
         FROM Rounds r
-        WHERE r.Played = 1
-           OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id)
+        WHERE r.CompetitionId = ?
+          AND (r.Played = 1
+           OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id))
         ORDER BY r.Id DESC
-        """
+        """,
+        (competition_id,),
     )
     editable_round_ids = {r[0] for r in rounds}
     if selected_round not in editable_round_ids:
-        selected_round = get_latest_editable_round()
+        selected_round = get_latest_editable_round(competition_id)
 
     if selected_round is None:
         group_numbers = query_db("SELECT DISTINCT GroupNumber FROM Players ORDER BY GroupNumber ASC")
@@ -599,7 +887,11 @@ def round_editor():
             unpaired_present_players=[],
         )
 
-    round_meta = query_db("SELECT Date, Played FROM Rounds WHERE Id = ?", (selected_round,), one=True)
+    round_meta = query_db(
+        "SELECT Date, Played FROM Rounds WHERE Id = ? AND CompetitionId = ?",
+        (selected_round, competition_id),
+        one=True,
+    )
     group_numbers = query_db("SELECT DISTINCT GroupNumber FROM Players ORDER BY GroupNumber ASC")
     rows = query_db(
         """
@@ -679,6 +971,7 @@ def round_editor():
 
 @app.route("/round-editor/add-pairing", methods=["POST"])
 def round_editor_add_pairing():
+    competition_id = get_current_competition_id()
     round_id = request.form.get("round_id", type=int)
     group_number = request.form.get("group_number", type=int)
     if round_id is None or group_number is None:
@@ -686,7 +979,11 @@ def round_editor_add_pairing():
     if group_number not in (1, 2):
         return jsonify({"success": False, "error": "Group must be 1 or 2"}), 400
 
-    round_row = query_db("SELECT Id FROM Rounds WHERE Id = ?", (round_id,), one=True)
+    round_row = query_db(
+        "SELECT Id FROM Rounds WHERE Id = ? AND CompetitionId = ?",
+        (round_id, competition_id),
+        one=True,
+    )
     if not round_row:
         return jsonify({"success": False, "error": "Round not found"}), 400
 
@@ -705,6 +1002,7 @@ def round_editor_add_pairing():
 
 @app.route("/round-editor/update-presence", methods=["POST"])
 def round_editor_update_presence():
+    competition_id = get_current_competition_id()
     round_id = request.form.get("round_id", type=int)
     if round_id is None:
         return jsonify({"success": False, "error": "Missing round id"}), 400
@@ -713,9 +1011,10 @@ def round_editor_update_presence():
         SELECT r.Id
         FROM Rounds r
         WHERE r.Id = ?
+          AND r.CompetitionId = ?
           AND (r.Played = 1 OR EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id))
         """,
-        (round_id,),
+        (round_id, competition_id),
         one=True,
     )
     if not editable_round:
@@ -744,18 +1043,25 @@ def round_editor_update_presence():
         )
     conn.commit()
     conn.close()
-    RefreshPlayersResults()
+    RefreshPlayersResults(DATABASE)
     return redirect(f"/round-editor?round_id={round_id}")
 
 @app.route("/round-editor/update-result", methods=["POST"])
 def round_editor_update_result():
+    competition_id = get_current_competition_id()
     data = request.json
     pairing_id = data.get("pairing_id")
     result_id = data.get("result_id")
     if not pairing_id:
         return jsonify({"success": False, "error": "Missing pairing id"}), 400
 
-    pairing_round = query_db("SELECT RoundId FROM Pairings WHERE Id = ?", (pairing_id,), one=True)
+    pairing_round = query_db(
+        """SELECT p.RoundId FROM Pairings p
+           INNER JOIN Rounds r ON p.RoundId = r.Id
+           WHERE p.Id = ? AND r.CompetitionId = ?""",
+        (pairing_id, competition_id),
+        one=True,
+    )
     if not pairing_round:
         return jsonify({"success": False, "error": "Pairing not found"}), 400
     pairing_players = query_db("SELECT PlayerId1, PlayerId2 FROM Pairings WHERE Id = ?", (pairing_id,), one=True)
@@ -775,11 +1081,12 @@ def round_editor_update_result():
         )
     conn.commit()
     conn.close()
-    RefreshPlayersResults()
+    RefreshPlayersResults(DATABASE)
     return jsonify({"success": True})
 
 @app.route("/round-editor/swap-players", methods=["POST"])
 def round_editor_swap_players():
+    competition_id = get_current_competition_id()
     data = request.json
     round_id = data.get("round_id")
     player_a_id = data.get("player_a_id")
@@ -795,9 +1102,10 @@ def round_editor_swap_players():
         SELECT r.Id
         FROM Rounds r
         WHERE r.Id = ?
+          AND r.CompetitionId = ?
           AND EXISTS (SELECT 1 FROM Pairings p WHERE p.RoundId = r.Id)
         """,
-        (round_id,),
+        (round_id, competition_id),
         one=True,
     )
     if not round_row:
@@ -951,7 +1259,7 @@ def round_editor_swap_players():
 
     conn.commit()
     conn.close()
-    RefreshPlayersResults()
+    RefreshPlayersResults(DATABASE)
     return jsonify({"success": True})
 
 if __name__ == "__main__":
