@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Speler bewerken</h2>
+
+  {% if error %}
+    <p class="form-error">{{ error }}</p>
+  {% endif %}
+
+  <form method="POST" class="player-form">
+    <label for="name">Naam</label>
+    <input id="name" name="name" type="text" value="{{ player.name }}" required>
+
+    <label for="rating">Rating</label>
+    <input id="rating" name="rating" type="number" value="{{ player.rating if player.rating is not none else '' }}">
+
+    <div class="player-actions">
+      <button type="submit" class="btn">Opslaan</button>
+      <a class="btn btn-secondary" href="{{ url_for('spelers') }}">Annuleren</a>
+    </div>
+  </form>
+{% endblock %}

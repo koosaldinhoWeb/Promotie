@@ -20,6 +20,18 @@ nav {
   margin-top: 10px;
 }
 
+.competition-selector {
+  margin-top: 12px;
+}
+
+.competition-selector label {
+  font-weight: bold;
+}
+
+.competition-selector select {
+  padding: 5px;
+}
+
 nav a {
   color: #fff;
   text-decoration: none;
@@ -48,17 +60,63 @@ th, td {
   border: 1px solid rgba(255,255,255,0.2);
 }
 
-button {
+.btn {
+  display: inline-block;
   background: #006600;
   color: white;
   border: none;
   padding: 5px 10px;
   cursor: pointer;
   border-radius: 4px;
+  font: inherit;
+  text-decoration: none;
 }
 
-button:hover {
+.btn:hover {
   background: #009900;
+}
+
+.btn-danger {
+  background: #a00000;
+}
+
+.btn-danger:hover {
+  background: #c00000;
+}
+
+.btn-secondary {
+  background: #555;
+}
+
+.player-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.player-actions form {
+  margin: 0;
+}
+
+.player-form {
+  display: grid;
+  gap: 10px;
+  max-width: 360px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.player-form input {
+  padding: 7px;
+}
+
+.player-form .player-actions {
+  margin-top: 10px;
+}
+
+.form-error {
+  color: #a00000;
+  font-weight: bold;
 }
 /* 
 footer {

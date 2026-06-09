@@ -3,8 +3,8 @@ from collections import defaultdict
 from itertools import combinations
 import pandas as pd
 
-def RefreshPlayersResults():
-    conn = sqlite3.connect("database.db")
+def RefreshPlayersResults(database="database.db"):
+    conn = sqlite3.connect(database)
     cur = conn.cursor()
 
     cur.execute("DELETE FROM PlayersResults")
@@ -127,26 +127,35 @@ def RefreshPlayersResults():
     conn.commit()
     conn.close()
 
-def BuildNextRound():
-    RefreshPlayersResults()
+def BuildNextRound(competition_id, database="database.db"):
+    RefreshPlayersResults(database)
 
     # Verbinden met de bestaande database
-    conn = sqlite3.connect("database.db")
+    conn = sqlite3.connect(database)
     cur = conn.cursor()
 
     # Instellen van de nieuwe ronde
 
     # 1. Haal de laatste ronde op
-    cur.execute("SELECT min(Id) FROM Rounds where Played = 0")
+    cur.execute(
+        "SELECT min(Id) FROM Rounds WHERE Played = 0 AND CompetitionId = ?",
+        (competition_id,),
+    )
     RoundId = cur.fetchone()[0]
+    if RoundId is None:
+        conn.close()
+        return
 
     # 2. Bepaal de presentie van de spelers en het aantal punten
     cur.execute("""SELECT a.PlayerId,a.Present,a.ReasonAbsentId,c.GroupNumber,COALESCE(c.Rating,0) as Rating,SUM(COALESCE(b.Points,0)) as TotalPoints FROM Present a
                 left join PlayersResults b on a.PlayerId = b.PlayerId
+                    and b.RoundId in (
+                        select Id from Rounds where CompetitionId = ?
+                    )
                 left join Players c on a.PlayerId = c.Id
                 WHERE a.RoundId = ?
                 GROUP BY a.PlayerId,a.Present,a.ReasonAbsentId,c.GroupNumber,c.Rating
-                """, (RoundId,))
+                """, (competition_id, RoundId))
 
     All_players= cur.fetchall()
     Headers = [desc[0] for desc in cur.description]
@@ -156,18 +165,26 @@ def BuildNextRound():
 
     # 3. Maak een lijst alle tegenstanders van vorige rondes
 
-    cur.execute("""SELECT Value FROM settings WHERE Name = 'NumberOfNonCompete'""")
-    NumberOfNonCompete = cur.fetchone()[0]
+    cur.execute(
+        "SELECT NumberOfNonCompete FROM Competitions WHERE Id = ?",
+        (competition_id,),
+    )
+    setting_row = cur.fetchone()
+    NumberOfNonCompete = int(setting_row[0]) if setting_row else 0
 
-    cur.execute("""SELECT Value FROM settings WHERE Name = 'Year'""")
-    Year = cur.fetchone()[0]
-
-    cur.execute("""SELECT a.PlayerId,a.OpponentId FROM PlayersResults a
-                inner join Rounds b on a.RoundId = b.Id
-                WHERE a.RoundId-? = ?
-                and b.year = ?
-
-                """, (NumberOfNonCompete,RoundId,Year))
+    cur.execute(
+        """SELECT a.PlayerId, a.OpponentId
+           FROM PlayersResults a
+           INNER JOIN Rounds b ON a.RoundId = b.Id
+           WHERE b.CompetitionId = ?
+             AND b.RoundNumber >= (
+                 SELECT RoundNumber FROM Rounds WHERE Id = ?
+             ) - ?
+             AND b.RoundNumber < (
+                 SELECT RoundNumber FROM Rounds WHERE Id = ?
+             )""",
+        (competition_id, RoundId, NumberOfNonCompete, RoundId),
+    )
 
     nonMatchingPlayers = cur.fetchall()
     Headers = [desc[0] for desc in cur.description]
@@ -230,7 +247,11 @@ def BuildNextRound():
         else:
             print(f"Player {player_id} has no available opponents.{group_number}")
 
-    cur.execute("DELETE FROM TempPairing")
+    cur.execute(
+        """DELETE FROM TempPairing
+           WHERE RoundId IN (SELECT Id FROM Rounds WHERE CompetitionId = ?)""",
+        (competition_id,),
+    )
     conn.commit()
     insert_query = """
     INSERT INTO TempPairing (PlayerId1, PlayerId2, RoundId, GroupNumber)
@@ -241,15 +262,19 @@ def BuildNextRound():
 
     cur.executemany(insert_query, data_to_insert)
     conn.commit()
+    conn.close()
 
 
-def SaveResultsToPlayers(round_id=None):
-    conn = sqlite3.connect("database.db")
+def SaveResultsToPlayers(competition_id, round_id=None, database="database.db"):
+    conn = sqlite3.connect(database)
     cur = conn.cursor()
 
     # Determine round to process (explicit round or active unplayed round)
     if round_id is None:
-        cur.execute("SELECT min(Id) FROM Rounds where Played = 0")
+        cur.execute(
+            "SELECT min(Id) FROM Rounds WHERE Played = 0 AND CompetitionId = ?",
+            (competition_id,),
+        )
         ActiveRound = cur.fetchone()[0]
     else:
         ActiveRound = round_id
@@ -259,7 +284,10 @@ def SaveResultsToPlayers(round_id=None):
         return
 
     # Only close/finalize the round. Points/results are recalculated on demand.
-    cur.execute("UPDATE Rounds SET Played = 1 WHERE Id = ?", (ActiveRound,))
+    cur.execute(
+        "UPDATE Rounds SET Played = 1 WHERE Id = ? AND CompetitionId = ?",
+        (ActiveRound, competition_id),
+    )
 
     conn.commit()
     conn.close()
