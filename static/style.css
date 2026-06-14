@@ -118,6 +118,66 @@ th, td {
   color: #a00000;
   font-weight: bold;
 }
+
+.form-success {
+  color: #006600;
+  font-weight: bold;
+}
+
+.settings-form {
+  max-width: 900px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.settings-meta,
+.points-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.settings-meta {
+  margin-bottom: 24px;
+}
+
+.settings-meta label {
+  align-self: center;
+  font-weight: bold;
+}
+
+.settings-meta input,
+.settings-meta select,
+.points-grid input,
+.absence-reason input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px;
+}
+
+.settings-heading,
+.absence-reason {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-group {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.absence-reason {
+  margin: 8px 0;
+}
+
+.absence-reason label {
+  flex: 1;
+}
 /* 
 footer {
   text-align: center;

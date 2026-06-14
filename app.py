@@ -1,5 +1,7 @@
 import sqlite3
 import os
+import json
+import math
 from datetime import datetime
 from flask import Flask, abort, render_template, request, jsonify, redirect, session, url_for
 from genereer_rondes import BuildNextRound,SaveResultsToPlayers,RefreshPlayersResults
@@ -67,6 +69,56 @@ def ensure_competition_schema():
     conn.close()
 
 ensure_competition_schema()
+
+def ensure_competition_settings_schema():
+    conn = sqlite3.connect(DATABASE)
+    cur = conn.cursor()
+    cur.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS CompetitionSettings(
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CompetitionId INTEGER NOT NULL UNIQUE,
+            Name TEXT NOT NULL,
+            SettingsType TEXT NOT NULL
+                CHECK(SettingsType IN ('swiss', 'percentage')),
+            Last_Update DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (CompetitionId) REFERENCES Competitions(Id)
+        );
+
+        CREATE TABLE IF NOT EXISTS CompetitionGroupPoints(
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CompetitionSettingsId INTEGER NOT NULL,
+            GroupNumber INTEGER NOT NULL,
+            WinPoints REAL NOT NULL,
+            DrawPoints REAL NOT NULL,
+            LossPoints REAL NOT NULL,
+            Last_Update DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(CompetitionSettingsId, GroupNumber),
+            FOREIGN KEY (CompetitionSettingsId)
+                REFERENCES CompetitionSettings(Id)
+        );
+
+        CREATE TABLE IF NOT EXISTS CompetitionAbsenceReasons(
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CompetitionGroupPointsId INTEGER NOT NULL,
+            Name TEXT NOT NULL,
+            Points REAL NOT NULL,
+            SortOrder INTEGER NOT NULL DEFAULT 0,
+            Last_Update DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (CompetitionGroupPointsId)
+                REFERENCES CompetitionGroupPoints(Id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_competition_group_points_settings
+            ON CompetitionGroupPoints(CompetitionSettingsId, GroupNumber);
+        CREATE INDEX IF NOT EXISTS idx_competition_absence_reasons_group
+            ON CompetitionAbsenceReasons(CompetitionGroupPointsId, SortOrder, Id);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+ensure_competition_settings_schema()
 
 def query_db(query, args=(), one=False):
     conn = sqlite3.connect(DATABASE)
@@ -188,6 +240,111 @@ def upsert_setting(cur, name, value, description=None):
         "INSERT INTO Settings (Id, Name, Value, Description) VALUES (?, ?, ?, ?)",
         (new_id, name, str(value), description),
     )
+
+def get_competition_settings_data(competition_id):
+    settings_row = query_db(
+        """
+        SELECT Id, Name, SettingsType
+        FROM CompetitionSettings
+        WHERE CompetitionId = ?
+        """,
+        (competition_id,),
+        one=True,
+    )
+
+    if settings_row:
+        group_rows = query_db(
+            """
+            SELECT Id, GroupNumber, WinPoints, DrawPoints, LossPoints
+            FROM CompetitionGroupPoints
+            WHERE CompetitionSettingsId = ?
+            ORDER BY GroupNumber ASC
+            """,
+            (settings_row[0],),
+        )
+        groups = []
+        for group_id, group_number, win_points, draw_points, loss_points in group_rows:
+            reason_rows = query_db(
+                """
+                SELECT Name, Points
+                FROM CompetitionAbsenceReasons
+                WHERE CompetitionGroupPointsId = ?
+                ORDER BY SortOrder ASC, Id ASC
+                """,
+                (group_id,),
+            )
+            groups.append(
+                {
+                    "group_number": group_number,
+                    "win_points": win_points,
+                    "draw_points": draw_points,
+                    "loss_points": loss_points,
+                    "absence_reasons": [
+                        {"name": reason[0], "points": reason[1]}
+                        for reason in reason_rows
+                    ],
+                }
+            )
+        return {
+            "name": settings_row[1],
+            "settings_type": settings_row[2],
+            "groups": groups,
+        }
+
+    competition = query_db(
+        "SELECT Name FROM Competitions WHERE Id = ?",
+        (competition_id,),
+        one=True,
+    )
+    global_type = query_db(
+        "SELECT Value FROM Settings WHERE Name = 'CompType'",
+        one=True,
+    )
+    settings_type = (global_type[0] if global_type else "percentage").lower()
+    if settings_type not in {"swiss", "percentage"}:
+        settings_type = "percentage"
+
+    group_numbers = [
+        row[0]
+        for row in query_db(
+            "SELECT DISTINCT GroupNumber FROM Players ORDER BY GroupNumber ASC"
+        )
+    ]
+    groups = []
+    for group_number in group_numbers:
+        result_rows = query_db(
+            """
+            SELECT Name, ResultsType, Points
+            FROM Results
+            WHERE GroupNumber = ?
+            ORDER BY Id ASC
+            """,
+            (group_number,),
+        )
+        points_by_type = {
+            str(result_type): points
+            for _, result_type, points in result_rows
+            if str(result_type) in {"1", "2", "3"}
+        }
+        groups.append(
+            {
+                "group_number": group_number,
+                "win_points": points_by_type.get("1", 0),
+                "draw_points": points_by_type.get("2", 0),
+                "loss_points": points_by_type.get("3", 0),
+                "absence_reasons": [
+                    {"name": name, "points": points}
+                    for name, result_type, points in result_rows
+                    if str(result_type) == "4"
+                ],
+            }
+        )
+
+    return {
+        "name": f"Instellingen {competition[0]}",
+        "settings_type": settings_type,
+        "groups": groups,
+    }
 
 
 @app.route("/")
@@ -758,6 +915,220 @@ def competition():
         non_compete=competition_row[3],
         competition_year=competition_row[1],
     )
+
+@app.route("/competition/settings", methods=["GET", "POST"])
+def competition_settings():
+    competition_id = get_current_competition_id()
+    competition_row = query_db(
+        "SELECT Name FROM Competitions WHERE Id = ?",
+        (competition_id,),
+        one=True,
+    )
+
+    if request.method == "GET":
+        return render_template(
+            "competition_settings.html",
+            competition_name=competition_row[0],
+            settings_data=get_competition_settings_data(competition_id),
+            error=None,
+            saved=request.args.get("saved") == "1",
+        )
+
+    raw_configuration = request.form.get("configuration", "")
+    try:
+        configuration = json.loads(raw_configuration)
+    except (TypeError, json.JSONDecodeError):
+        configuration = {}
+
+    def render_error(message):
+        return render_template(
+            "competition_settings.html",
+            competition_name=competition_row[0],
+            settings_data=configuration,
+            error=message,
+            saved=False,
+        ), 400
+
+    if not isinstance(configuration, dict):
+        return render_error("De instellingen konden niet worden gelezen")
+
+    name = configuration.get("name")
+    settings_type = configuration.get("settings_type")
+    groups = configuration.get("groups")
+    if not isinstance(name, str) or not name.strip():
+        return render_error("Vul een naam voor deze instellingen in")
+    name = name.strip()
+    if settings_type not in {"swiss", "percentage"}:
+        return render_error("Kies Zwitsers of Percentage als competitietype")
+    if not isinstance(groups, list) or not groups:
+        return render_error("Voeg minimaal één groep toe")
+
+    validated_groups = []
+    seen_group_numbers = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            return render_error("Een groep bevat ongeldige gegevens")
+
+        group_number = group.get("group_number")
+        if (
+            not isinstance(group_number, int)
+            or isinstance(group_number, bool)
+            or group_number < 1
+        ):
+            return render_error("Ieder groepnummer moet een positief geheel getal zijn")
+        if group_number in seen_group_numbers:
+            return render_error(f"Groep {group_number} komt meer dan één keer voor")
+        seen_group_numbers.add(group_number)
+
+        point_values = []
+        for field_name, label in (
+            ("win_points", "winst"),
+            ("draw_points", "remise"),
+            ("loss_points", "verlies"),
+        ):
+            try:
+                points = float(group.get(field_name))
+            except (TypeError, ValueError):
+                return render_error(
+                    f"Vul geldige punten voor {label} in bij groep {group_number}"
+                )
+            if not math.isfinite(points):
+                return render_error(
+                    f"Vul geldige punten voor {label} in bij groep {group_number}"
+                )
+            point_values.append(points)
+
+        reasons = group.get("absence_reasons", [])
+        if not isinstance(reasons, list):
+            return render_error(
+                f"De redenen voor afwezigheid bij groep {group_number} zijn ongeldig"
+            )
+
+        validated_reasons = []
+        seen_reason_names = set()
+        for reason in reasons:
+            if not isinstance(reason, dict):
+                return render_error(
+                    f"Een reden voor afwezigheid bij groep {group_number} is ongeldig"
+                )
+            reason_name = reason.get("name")
+            if not isinstance(reason_name, str) or not reason_name.strip():
+                return render_error(
+                    f"Vul alle redenen voor afwezigheid bij groep {group_number} in"
+                )
+            reason_name = reason_name.strip()
+            normalized_name = reason_name.casefold()
+            if normalized_name in seen_reason_names:
+                return render_error(
+                    f"De reden '{reason_name}' komt meer dan één keer voor bij groep {group_number}"
+                )
+            seen_reason_names.add(normalized_name)
+            try:
+                reason_points = float(reason.get("points"))
+            except (TypeError, ValueError):
+                return render_error(
+                    f"Vul geldige punten in voor '{reason_name}' bij groep {group_number}"
+                )
+            if not math.isfinite(reason_points):
+                return render_error(
+                    f"Vul geldige punten in voor '{reason_name}' bij groep {group_number}"
+                )
+            validated_reasons.append((reason_name, reason_points))
+
+        validated_groups.append(
+            (
+                group_number,
+                point_values[0],
+                point_values[1],
+                point_values[2],
+                validated_reasons,
+            )
+        )
+
+    conn = sqlite3.connect(DATABASE)
+    try:
+        cur = conn.cursor()
+        settings_row = cur.execute(
+            "SELECT Id FROM CompetitionSettings WHERE CompetitionId = ?",
+            (competition_id,),
+        ).fetchone()
+        if settings_row:
+            settings_id = settings_row[0]
+            cur.execute(
+                """
+                UPDATE CompetitionSettings
+                SET Name = ?, SettingsType = ?, Last_Update = CURRENT_TIMESTAMP
+                WHERE Id = ?
+                """,
+                (name, settings_type, settings_id),
+            )
+            cur.execute(
+                """
+                DELETE FROM CompetitionAbsenceReasons
+                WHERE CompetitionGroupPointsId IN (
+                    SELECT Id FROM CompetitionGroupPoints
+                    WHERE CompetitionSettingsId = ?
+                )
+                """,
+                (settings_id,),
+            )
+            cur.execute(
+                "DELETE FROM CompetitionGroupPoints WHERE CompetitionSettingsId = ?",
+                (settings_id,),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO CompetitionSettings
+                    (CompetitionId, Name, SettingsType)
+                VALUES (?, ?, ?)
+                """,
+                (competition_id, name, settings_type),
+            )
+            settings_id = cur.lastrowid
+
+        for (
+            group_number,
+            win_points,
+            draw_points,
+            loss_points,
+            reasons,
+        ) in validated_groups:
+            cur.execute(
+                """
+                INSERT INTO CompetitionGroupPoints
+                    (CompetitionSettingsId, GroupNumber, WinPoints,
+                     DrawPoints, LossPoints)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    settings_id,
+                    group_number,
+                    win_points,
+                    draw_points,
+                    loss_points,
+                ),
+            )
+            group_points_id = cur.lastrowid
+            cur.executemany(
+                """
+                INSERT INTO CompetitionAbsenceReasons
+                    (CompetitionGroupPointsId, Name, Points, SortOrder)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (group_points_id, reason_name, reason_points, index)
+                    for index, (reason_name, reason_points) in enumerate(reasons)
+                ],
+            )
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        return render_error("De instellingen konden niet worden opgeslagen")
+    finally:
+        conn.close()
+
+    return redirect(url_for("competition_settings", saved=1))
 
 @app.route("/competition/reset-results", methods=["POST"])
 def competition_reset_results():
