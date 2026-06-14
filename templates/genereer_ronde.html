@@ -2,11 +2,11 @@
 
 {% block content %}
   <h2>Huidige Ronde</h2>
-  <p>Paringen zijn automatisch gegenereerd na aanwezigheidcontrole.</p>
+  <p>De indelingen zijn automatisch gemaakt na de aanwezigheidscontrole.</p>
   <p><a href="/player-overview" class="btn">Terug: aanwezigheid aanpassen</a></p>
   <table id="pairingTable">
     <thead>
-      <tr><th>Group</th><th>Player 1</th><th>Player 2</th></tr>
+      <tr><th>Groep</th><th>Speler 1</th><th>Speler 2</th></tr>
     </thead>
     <tbody>
       {% for p in pairings %}
@@ -22,7 +22,7 @@
   <p id="swapStatus">Klik op twee spelers om ze te wisselen.</p>
 
   <form method="POST" action="/finalize-round">
-    <button type="submit" class="btn">Ronde Officieel Maken</button>
+    <button type="submit" class="btn">Ronde definitief maken</button>
   </form>
 
   <style>

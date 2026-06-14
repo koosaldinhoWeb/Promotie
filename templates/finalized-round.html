@@ -10,7 +10,7 @@
 
   <table id="pairingTable">
     <thead>
-      <tr><th>Group</th><th>Player 1</th><th>Player 2</th><th>Results</th></tr>
+      <tr><th>Groep</th><th>Speler 1</th><th>Speler 2</th><th>Resultaat</th></tr>
     </thead>
     <tbody>
       {% for p in pairings %}
@@ -21,10 +21,10 @@
         <td>
           <select class="result-select"
                   onchange="submitResult({{ p.Id }}, this.value)">
-            <option value="" {% if not p.Result %}selected{% endif %}>Select...</option>
-            <option value="1" {% if p.Result == 1 %}selected{% endif %}>White wins (1-0)</option>
-            <option value="2" {% if p.Result == 2 %}selected{% endif %}>Black wins (0-1)</option>
-            <option value="3" {% if p.Result == 3 %}selected{% endif %}>Draw (½-½)</option>
+            <option value="" {% if not p.Result %}selected{% endif %}>Kies...</option>
+            <option value="1" {% if p.Result == 1 %}selected{% endif %}>Wit wint (1-0)</option>
+            <option value="2" {% if p.Result == 2 %}selected{% endif %}>Zwart wint (0-1)</option>
+            <option value="3" {% if p.Result == 3 %}selected{% endif %}>Remise (½-½)</option>
           </select>
         </td>
       </tr>
@@ -33,7 +33,7 @@
   </table>
   <form method="POST" action="/save-results">
     <input type="hidden" name="round_id" value="{{ round_id }}">
-    <button type="submit" class="btn">Opslaan / Update Resultaten</button>
+    <button type="submit" class="btn">Resultaten opslaan of bijwerken</button>
   </form>
 
 <script>
