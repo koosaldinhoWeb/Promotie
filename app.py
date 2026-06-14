@@ -109,7 +109,7 @@ def get_current_competition_id():
         one=True,
     )
     if not first:
-        abort(500, "No competition is configured")
+        abort(500, "Er is geen competitie ingesteld")
     session["competition_id"] = first[0]
     return first[0]
 
@@ -125,6 +125,24 @@ def competition_context():
         "current_competition": current,
         "current_competition_id": competition_id,
     }
+
+@app.template_filter("nederlands_resultaat")
+def nederlands_resultaat(value):
+    translations = {
+        "Win": "Winst",
+        "Draw": "Remise",
+        "Loss": "Verlies",
+        "Absent": "Afwezig",
+        "Absent more than allowed": "Vaker afwezig dan toegestaan",
+        "Extern": "Extern",
+        "Extern more than allowed": "Vaker extern dan toegestaan",
+        "Wedstrijd leider": "Wedstrijdleider",
+        "Bye1": "Vrije ronde 1",
+        "Bye2": "Vrije ronde 2",
+        "Bye3": "Vrije ronde 3",
+        "Uneven": "Oneven aantal spelers",
+    }
+    return translations.get(value, value)
 
 def get_latest_round_with_pairings(competition_id):
     row = query_db(
@@ -330,7 +348,7 @@ def update_presence():
         one=True,
     )
     if not active_round:
-        return jsonify({"success": False, "error": "No active round found"}), 400
+        return jsonify({"success": False, "error": "Er is geen actieve ronde gevonden"}), 400
     active_round_id = active_round[0]
 
     conn = sqlite3.connect(DATABASE)
@@ -367,7 +385,7 @@ def confirm_attendance():
         one=True,
     )
     if not active_round or active_round[0] is None:
-        return jsonify({"success": False, "error": "No active round found"}), 400
+        return jsonify({"success": False, "error": "Er is geen actieve ronde gevonden"}), 400
 
     active_round_id = active_round[0]
     conn = sqlite3.connect(DATABASE)
@@ -410,7 +428,7 @@ def generate_round():
         (competition_id,),
     )
     if rows[0][0] > 0:
-         return jsonify({"success": False, "error": "Missing data"}), 400
+         return jsonify({"success": False, "error": "Er ontbreken gegevens"}), 400
     BuildNextRound(competition_id, DATABASE)
     return redirect("/genereer-ronde")
 
@@ -467,14 +485,14 @@ def swap_players():
     match_b = cur.fetchone()
 
     if not match_a or not match_b:
-        return jsonify({"success": False, "error": "One of the players not found"}), 400
+        return jsonify({"success": False, "error": "Een van de spelers is niet gevonden"}), 400
 
     # Special case: both players are in the same pairing, just flip colors.
     if match_a[4] == match_b[4]:
         p1, p2, rnd, grp, row_id = match_a
         if {p1, p2} != {player_a, player_b}:
             conn.close()
-            return jsonify({"success": False, "error": "Players are not opponents in the same match"}), 400
+            return jsonify({"success": False, "error": "De spelers zijn geen tegenstanders in dezelfde partij"}), 400
 
         cur.execute(
             """
@@ -591,7 +609,7 @@ def update_result():
     result_id = data.get("result_id")
     print(pairing_id)
     if not pairing_id:
-        return jsonify({"success": False, "error": "Missing data"}), 400
+        return jsonify({"success": False, "error": "Er ontbreken gegevens"}), 400
     pairing = query_db(
         """SELECT p.Id FROM Pairings p
            INNER JOIN Rounds r ON p.RoundId = r.Id
@@ -624,7 +642,7 @@ def save_results():
         round_id = get_latest_round_with_pairings(competition_id)
 
     if round_id is None:
-        return jsonify({"success": False, "error": "No round found to save"}), 400
+        return jsonify({"success": False, "error": "Er is geen ronde gevonden om op te slaan"}), 400
     round_exists = query_db(
         "SELECT Id FROM Rounds WHERE Id = ? AND CompetitionId = ?",
         (round_id, competition_id),
@@ -647,7 +665,7 @@ def save_results():
 
     if missing > 0:
         return jsonify(
-            {"success": False, "error": "Not all results are filled in for this round"}
+            {"success": False, "error": "Niet alle resultaten van deze ronde zijn ingevuld"}
         ), 400
 
     SaveResultsToPlayers(competition_id, round_id, DATABASE)
@@ -780,18 +798,18 @@ def competition_create():
     round_dates = request.form.getlist("round_date")
 
     if number_of_rounds is None or number_of_rounds < 1:
-        return jsonify({"success": False, "error": "Number of rounds must be at least 1"}), 400
+        return jsonify({"success": False, "error": "Het aantal rondes moet minimaal 1 zijn"}), 400
     if non_compete is None or non_compete < 0:
-        return jsonify({"success": False, "error": "Number of rounds between pairings must be 0 or more"}), 400
+        return jsonify({"success": False, "error": "Het aantal rondes tussen dezelfde indeling moet 0 of hoger zijn"}), 400
     if len(round_dates) != number_of_rounds:
-        return jsonify({"success": False, "error": "Provide exactly one date per round"}), 400
+        return jsonify({"success": False, "error": "Vul voor iedere ronde precies één datum in"}), 400
 
     parsed_dates = []
     for d in round_dates:
         try:
             parsed_dates.append(datetime.strptime(d, "%Y-%m-%d").date())
         except ValueError:
-            return jsonify({"success": False, "error": f"Invalid date format: {d}"}), 400
+            return jsonify({"success": False, "error": f"Ongeldige datumnotatie: {d}"}), 400
 
     year = parsed_dates[0].year
     if not name:
@@ -916,8 +934,8 @@ def round_editor():
     reasons = query_db("SELECT Id, Name FROM Results ORDER BY Id ASC")
     pairing_rows = query_db(
         """SELECT
-               COALESCE(b.Name, CASE WHEN a.PlayerId1 = 'NONE' THEN 'None' ELSE a.PlayerId1 END) as Player1Name,
-               COALESCE(c.Name, CASE WHEN a.PlayerId2 = 'NONE' THEN 'None' ELSE a.PlayerId2 END) as Player2Name,
+               COALESCE(b.Name, CASE WHEN a.PlayerId1 = 'NONE' THEN 'Geen speler' ELSE a.PlayerId1 END) as Player1Name,
+               COALESCE(c.Name, CASE WHEN a.PlayerId2 = 'NONE' THEN 'Geen speler' ELSE a.PlayerId2 END) as Player2Name,
                a.GroupNumber, a.ResultsType, a.Id, a.PlayerId1, a.PlayerId2
            FROM Pairings a
            LEFT JOIN Players b ON a.PlayerId1 = b.Id
@@ -975,9 +993,9 @@ def round_editor_add_pairing():
     round_id = request.form.get("round_id", type=int)
     group_number = request.form.get("group_number", type=int)
     if round_id is None or group_number is None:
-        return jsonify({"success": False, "error": "Missing round or group"}), 400
+        return jsonify({"success": False, "error": "De ronde of groep ontbreekt"}), 400
     if group_number not in (1, 2):
-        return jsonify({"success": False, "error": "Group must be 1 or 2"}), 400
+        return jsonify({"success": False, "error": "De groep moet 1 of 2 zijn"}), 400
 
     round_row = query_db(
         "SELECT Id FROM Rounds WHERE Id = ? AND CompetitionId = ?",
@@ -985,7 +1003,7 @@ def round_editor_add_pairing():
         one=True,
     )
     if not round_row:
-        return jsonify({"success": False, "error": "Round not found"}), 400
+        return jsonify({"success": False, "error": "De ronde is niet gevonden"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -1005,7 +1023,7 @@ def round_editor_update_presence():
     competition_id = get_current_competition_id()
     round_id = request.form.get("round_id", type=int)
     if round_id is None:
-        return jsonify({"success": False, "error": "Missing round id"}), 400
+        return jsonify({"success": False, "error": "Het rondenummer ontbreekt"}), 400
     editable_round = query_db(
         """
         SELECT r.Id
@@ -1018,7 +1036,7 @@ def round_editor_update_presence():
         one=True,
     )
     if not editable_round:
-        return jsonify({"success": False, "error": "Only played rounds or rounds with pairings can be edited here"}), 400
+        return jsonify({"success": False, "error": "Alleen gespeelde rondes of rondes met een indeling kunnen hier worden bewerkt"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -1053,7 +1071,7 @@ def round_editor_update_result():
     pairing_id = data.get("pairing_id")
     result_id = data.get("result_id")
     if not pairing_id:
-        return jsonify({"success": False, "error": "Missing pairing id"}), 400
+        return jsonify({"success": False, "error": "Het partijnummer ontbreekt"}), 400
 
     pairing_round = query_db(
         """SELECT p.RoundId FROM Pairings p
@@ -1063,12 +1081,12 @@ def round_editor_update_result():
         one=True,
     )
     if not pairing_round:
-        return jsonify({"success": False, "error": "Pairing not found"}), 400
+        return jsonify({"success": False, "error": "De partij is niet gevonden"}), 400
     pairing_players = query_db("SELECT PlayerId1, PlayerId2 FROM Pairings WHERE Id = ?", (pairing_id,), one=True)
     if not pairing_players:
-        return jsonify({"success": False, "error": "Pairing not found"}), 400
+        return jsonify({"success": False, "error": "De partij is niet gevonden"}), 400
     if pairing_players[0] == "NONE" or pairing_players[1] == "NONE":
-        return jsonify({"success": False, "error": "Fill both players before setting a result"}), 400
+        return jsonify({"success": False, "error": "Vul beide spelers in voordat je een resultaat kiest"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -1093,9 +1111,9 @@ def round_editor_swap_players():
     player_b_id = data.get("player_b_id")
 
     if not round_id or not player_a_id or not player_b_id:
-        return jsonify({"success": False, "error": "Missing data"}), 400
+        return jsonify({"success": False, "error": "Er ontbreken gegevens"}), 400
     if str(player_a_id) == str(player_b_id):
-        return jsonify({"success": False, "error": "Select two different players"}), 400
+        return jsonify({"success": False, "error": "Selecteer twee verschillende spelers"}), 400
 
     round_row = query_db(
         """
@@ -1109,7 +1127,7 @@ def round_editor_swap_players():
         one=True,
     )
     if not round_row:
-        return jsonify({"success": False, "error": "Round has no pairings to edit"}), 400
+        return jsonify({"success": False, "error": "Deze ronde heeft geen indelingen om te bewerken"}), 400
 
     conn = sqlite3.connect(DATABASE)
     cur = conn.cursor()
@@ -1123,7 +1141,7 @@ def round_editor_swap_players():
     present_rows = {row[0]: row[1] for row in cur.fetchall()}
     if present_rows.get(str(player_a_id), 0) != 1 or present_rows.get(str(player_b_id), 0) != 1:
         conn.close()
-        return jsonify({"success": False, "error": "Both players must be marked present first"}), 400
+        return jsonify({"success": False, "error": "Beide spelers moeten eerst als aanwezig zijn gemarkeerd"}), 400
 
     cur.execute("SELECT GroupNumber FROM Players WHERE Id = ?", (str(player_a_id),))
     group_a = cur.fetchone()
@@ -1131,10 +1149,10 @@ def round_editor_swap_players():
     group_b = cur.fetchone()
     if not group_a or not group_b:
         conn.close()
-        return jsonify({"success": False, "error": "Player not found"}), 400
+        return jsonify({"success": False, "error": "De speler is niet gevonden"}), 400
     if group_a[0] != group_b[0]:
         conn.close()
-        return jsonify({"success": False, "error": "Players must be in the same group"}), 400
+        return jsonify({"success": False, "error": "De spelers moeten in dezelfde groep zitten"}), 400
 
     cur.execute(
         """SELECT Id, PlayerId1, PlayerId2, GroupNumber
@@ -1155,13 +1173,13 @@ def round_editor_swap_players():
     if match_a and match_b:
         if match_a[3] != match_b[3]:
             conn.close()
-            return jsonify({"success": False, "error": "Players are not in the same group pairings"}), 400
+            return jsonify({"success": False, "error": "De spelers zitten niet in indelingen van dezelfde groep"}), 400
 
         if match_a[0] == match_b[0]:
             row_id, p1, p2, _ = match_a
             if {p1, p2} != {str(player_a_id), str(player_b_id)}:
                 conn.close()
-                return jsonify({"success": False, "error": "Players are not opponents in this round"}), 400
+                return jsonify({"success": False, "error": "De spelers zijn in deze ronde geen tegenstanders"}), 400
             cur.execute(
                 "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
                 (p2, p1, row_id),
@@ -1194,7 +1212,7 @@ def round_editor_swap_players():
 
         if grp != group_a[0]:
             conn.close()
-            return jsonify({"success": False, "error": "Cannot move player into a different group pairing"}), 400
+            return jsonify({"success": False, "error": "De speler kan niet naar een indeling van een andere groep worden verplaatst"}), 400
 
         if p1 == out_id:
             p1 = in_id
@@ -1202,7 +1220,7 @@ def round_editor_swap_players():
             p2 = in_id
         else:
             conn.close()
-            return jsonify({"success": False, "error": "Swap failed"}), 400
+            return jsonify({"success": False, "error": "Het wisselen is mislukt"}), 400
 
         cur.execute(
             "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",
@@ -1231,7 +1249,7 @@ def round_editor_swap_players():
         empty_pairing = cur.fetchone()
         if not empty_pairing:
             conn.close()
-            return jsonify({"success": False, "error": "No empty pairing slot found in this group"}), 400
+            return jsonify({"success": False, "error": "Er is in deze groep geen lege plek gevonden"}), 400
 
         row_id, p1, p2, _ = empty_pairing
         candidates = [str(player_a_id), str(player_b_id)]
@@ -1242,7 +1260,7 @@ def round_editor_swap_players():
 
         if candidates:
             conn.close()
-            return jsonify({"success": False, "error": "Need two empty slots to place both players"}), 400
+            return jsonify({"success": False, "error": "Er zijn twee lege plekken nodig om beide spelers te plaatsen"}), 400
 
         cur.execute(
             "UPDATE Pairings SET PlayerId1 = ?, PlayerId2 = ?, ResultsType = NULL WHERE Id = ?",

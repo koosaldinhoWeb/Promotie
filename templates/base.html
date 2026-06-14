@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html>
+<html lang="nl">
 <head>
-  <title>Club Website</title>
+  <title>Website van Schaakvereniging Promotie</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header>
-    <h1>SV Promotie Style Club</h1>
+    <h1>Schaakvereniging Promotie</h1>
     <form method="POST" action="{{ url_for('select_competition') }}" class="competition-selector">
       <input type="hidden" name="next" value="{{ request.full_path }}">
       <label for="competition_id">Competitie:</label>
@@ -19,10 +19,10 @@
       </select>
     </form>
     <nav>
-      <a href="/">Home</a>
+      <a href="/">Startpagina</a>
       <a href="/spelers">Spelers</a>
       <a href="/player-overview">Genereer nieuwe ronde</a>
-      <a href="/finalized_round">Finalized Ronde</a>
+      <a href="/finalized_round">Huidige ronde</a>
       <a href="/round-editor">Ronde aanpassen</a>
       <a href="/competition">Competitie</a>
       <a href="/player_ranking">Tussenstand</a>
@@ -32,7 +32,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer>
-    <p>&copy; 2026 - Chess Club</p>
+    <p>&copy; 2026 - Schaakvereniging Promotie</p>
   </footer>
 </body>
 </html>

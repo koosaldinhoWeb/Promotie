@@ -25,7 +25,7 @@
           <select name="reason_{{ p.id }}">
             <option value="">Geen reden opgegeven</option>
             {% for r in reasons %}
-              <option value="{{ r[0] }}" {% if p.reason_id == r[0] %}selected{% endif %}>{{ r[1] }}</option>
+              <option value="{{ r[0] }}" {% if p.reason_id == r[0] %}selected{% endif %}>{{ r[1]|nederlands_resultaat }}</option>
             {% endfor %}
           </select>
         {% else %}
