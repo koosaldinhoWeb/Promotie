@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Competitie-instellingen</h2>
+  <p>Deze instellingen gelden alleen voor <strong>{{ competition_name }}</strong>.</p>
+
+  {% if saved %}
+    <p class="form-success">De instellingen zijn opgeslagen.</p>
+  {% endif %}
+  {% if error %}
+    <p class="form-error">{{ error }}</p>
+  {% endif %}
+
+  <form method="POST" action="{{ url_for('competition_settings') }}" id="settings-form" class="settings-form">
+    <input type="hidden" name="configuration" id="configuration">
+
+    <div class="settings-meta">
+      <label for="settings-name">Naam instellingen</label>
+      <input type="text" id="settings-name" required>
+
+      <label for="settings-type">Type competitie</label>
+      <select id="settings-type" required>
+        <option value="swiss">Zwitsers</option>
+        <option value="percentage">Percentage</option>
+      </select>
+    </div>
+
+    <div class="settings-heading">
+      <h3>Punten per groep</h3>
+      <button type="button" class="btn btn-secondary" id="add-group">Groep toevoegen</button>
+    </div>
+    <div id="groups"></div>
+
+    <button type="submit" class="btn">Instellingen opslaan</button>
+  </form>
+
+  <template id="group-template">
+    <section class="settings-group">
+      <div class="settings-heading">
+        <h4 class="group-title">Groep</h4>
+        <button type="button" class="btn btn-danger remove-group">Groep verwijderen</button>
+      </div>
+
+      <div class="points-grid">
+        <label>Groepnummer
+          <input type="number" class="group-number" min="1" required>
+        </label>
+        <label>Winst
+          <input type="number" class="win-points" step="any" required>
+        </label>
+        <label>Remise
+          <input type="number" class="draw-points" step="any" required>
+        </label>
+        <label>Verlies
+          <input type="number" class="loss-points" step="any" required>
+        </label>
+      </div>
+
+      <div class="settings-heading">
+        <h5>Redenen voor afwezigheid</h5>
+        <button type="button" class="btn btn-secondary add-reason">Reden toevoegen</button>
+      </div>
+      <div class="absence-reasons"></div>
+    </section>
+  </template>
+
+  <template id="reason-template">
+    <div class="absence-reason">
+      <label>Reden
+        <input type="text" class="reason-name" required>
+      </label>
+      <label>Punten
+        <input type="number" class="reason-points" step="any" required>
+      </label>
+      <button type="button" class="btn btn-danger remove-reason">Verwijderen</button>
+    </div>
+  </template>
+
+  <script>
+    const initialSettings = {{ settings_data|tojson }};
+    const form = document.getElementById("settings-form");
+    const groupsContainer = document.getElementById("groups");
+    const groupTemplate = document.getElementById("group-template");
+    const reasonTemplate = document.getElementById("reason-template");
+
+    function addReason(groupElement, reason = {name: "", points: 0}) {
+      const reasonElement = reasonTemplate.content.firstElementChild.cloneNode(true);
+      reasonElement.querySelector(".reason-name").value = reason.name;
+      reasonElement.querySelector(".reason-points").value = reason.points;
+      reasonElement.querySelector(".remove-reason").addEventListener("click", () => {
+        reasonElement.remove();
+      });
+      groupElement.querySelector(".absence-reasons").appendChild(reasonElement);
+    }
+
+    function updateGroupTitle(groupElement) {
+      const groupNumber = groupElement.querySelector(".group-number").value;
+      groupElement.querySelector(".group-title").textContent =
+        groupNumber ? `Groep ${groupNumber}` : "Nieuwe groep";
+    }
+
+    function addGroup(group = {}) {
+      const groupElement = groupTemplate.content.firstElementChild.cloneNode(true);
+      groupElement.querySelector(".group-number").value = group.group_number || "";
+      groupElement.querySelector(".win-points").value = group.win_points ?? 0;
+      groupElement.querySelector(".draw-points").value = group.draw_points ?? 0;
+      groupElement.querySelector(".loss-points").value = group.loss_points ?? 0;
+      groupElement.querySelector(".group-number").addEventListener("input", () => {
+        updateGroupTitle(groupElement);
+      });
+      groupElement.querySelector(".add-reason").addEventListener("click", () => {
+        addReason(groupElement);
+      });
+      groupElement.querySelector(".remove-group").addEventListener("click", () => {
+        groupElement.remove();
+      });
+      (group.absence_reasons || []).forEach((reason) => addReason(groupElement, reason));
+      updateGroupTitle(groupElement);
+      groupsContainer.appendChild(groupElement);
+    }
+
+    document.getElementById("settings-name").value = initialSettings.name || "";
+    document.getElementById("settings-type").value =
+      ["swiss", "percentage"].includes(initialSettings.settings_type)
+        ? initialSettings.settings_type
+        : "percentage";
+    (initialSettings.groups || []).forEach(addGroup);
+    document.getElementById("add-group").addEventListener("click", () => addGroup());
+
+    form.addEventListener("submit", (event) => {
+      if (!form.reportValidity()) {
+        event.preventDefault();
+        return;
+      }
+
+      const groups = [...document.querySelectorAll(".settings-group")].map((groupElement) => ({
+        group_number: Number(groupElement.querySelector(".group-number").value),
+        win_points: Number(groupElement.querySelector(".win-points").value),
+        draw_points: Number(groupElement.querySelector(".draw-points").value),
+        loss_points: Number(groupElement.querySelector(".loss-points").value),
+        absence_reasons: [...groupElement.querySelectorAll(".absence-reason")].map((reasonElement) => ({
+          name: reasonElement.querySelector(".reason-name").value.trim(),
+          points: Number(reasonElement.querySelector(".reason-points").value),
+        })),
+      }));
+
+      document.getElementById("configuration").value = JSON.stringify({
+        name: document.getElementById("settings-name").value.trim(),
+        settings_type: document.getElementById("settings-type").value,
+        groups,
+      });
+    });
+  </script>
+{% endblock %}
