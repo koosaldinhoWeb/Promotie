@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Speler toevoegen</h2>
+
+  {% if error %}
+    <p class="form-error">{{ error }}</p>
+  {% endif %}
+
+  <form method="POST" class="player-form">
+    <label for="name">Naam</label>
+    <input id="name" name="name" type="text" value="{{ player.name }}" required>
+
+    <label for="rating">Rating</label>
+    <input id="rating" name="rating" type="number" value="{{ player.rating }}">
+
+    <label for="group_number">Groep</label>
+    <select id="group_number" name="group_number" required>
+      {% for group in groups %}
+        <option value="{{ group }}" {% if player.group_number|string == group|string %}selected{% endif %}>
+          {{ group }}
+        </option>
+      {% endfor %}
+    </select>
+
+    <div class="player-actions">
+      <button type="submit" class="btn">Toevoegen</button>
+      <a class="btn btn-secondary" href="{{ url_for('spelers') }}">Annuleren</a>
+    </div>
+  </form>
+{% endblock %}

@@ -11,7 +11,7 @@
           <th>Periode</th>
           <th>Tegenstander</th>
           <th>Resultaat</th>
-          <th>Punten</th>
+          <th>{% if settings_type == "percentage" %}Score{% else %}Punten{% endif %}</th>
         </tr>
       </thead>
       <tbody>
@@ -19,9 +19,22 @@
         <tr>
           <td>{{r.Date}}</td>
           <td>{{r.Period}}</td>
-          <td><a href="/speler/{{ r.opponent_id }}">{{ r.opponent }}</a></td>
+          <td>
+            {% if r.opponent_id %}
+              <a href="/speler/{{ r.opponent_id }}">{{ r.opponent }}</a>
+            {% else %}
+              {{ r.opponent or "-" }}
+            {% endif %}
+          </td>
           <td>{{ r.result_id|nederlands_resultaat }}</td>
-          <td>{{ r.Points}}</td>
+          <td>
+            {% if settings_type == "percentage" and r.MatchScore is not none %}
+              {{ r.MatchScore }}
+            {% elif settings_type == "percentage" %}
+              -
+            {% else %}
+              {{ r.Points}}
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -32,5 +45,5 @@
   {% endif %}
 
   <br>
-  <a href="javascript:history.back()"  class="btn">← Terug</a>
+  <a href="javascript:history.back()" class="btn">&larr; Terug</a>
 {% endblock %}

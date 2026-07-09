@@ -2,11 +2,33 @@
 
 {% block content %}
   <h2>Spelers</h2>
+  <p>
+    <a class="btn" href="{{ url_for('add_player') }}">Nieuwe speler toevoegen</a>
+  </p>
+  {% if available_players %}
+    <form method="POST" action="{{ url_for('add_existing_player_to_competition') }}" class="player-inline-form">
+      <input type="hidden" name="competition_id" value="{{ current_competition_id }}">
+      <label for="player_id">Bestaande speler</label>
+      <select id="player_id" name="player_id" required>
+        {% for player in available_players %}
+          <option value="{{ player.id }}">{{ player.name }}</option>
+        {% endfor %}
+      </select>
+      <label for="new_player_group">Groep</label>
+      <select id="new_player_group" name="group_number" required>
+        {% for group in groups %}
+          <option value="{{ group }}">{{ group }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn">Toevoegen aan competitie</button>
+    </form>
+  {% endif %}
   <table>
     <thead>
       <tr>
         <th>Naam</th>
         <th>Rating</th>
+        <th>Groep</th>
         <th>Acties</th>
       </tr>
     </thead>
@@ -15,16 +37,34 @@
       <tr>
         <td>{{ p.name }}</td>
         <td>{{ p.rating }}</td>
+        <td>
+          <form method="POST" action="{{ url_for('update_player_competition_group', player_id=p.id) }}" class="player-group-form">
+            <input type="hidden" name="competition_id" value="{{ current_competition_id }}">
+            <select name="group_number" aria-label="Groep voor {{ p.name }}">
+              {% for group in groups %}
+                <option value="{{ group }}" {% if p.group_number|string == group|string %}selected{% endif %}>
+                  {{ group }}
+                </option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-secondary">Opslaan</button>
+          </form>
+        </td>
         <td class="player-actions">
           <a class="btn" href="{{ url_for('edit_player', player_id=p.id) }}">Bewerk</a>
           <form
             method="POST"
             action="{{ url_for('delete_player', player_id=p.id) }}"
-            onsubmit="return confirm('Weet je zeker dat je {{ p.name|e }} wilt verwijderen?');"
+            onsubmit="return confirm('Weet je zeker dat je {{ p.name|e }} uit deze competitie wilt verwijderen?');"
           >
-            <button type="submit" class="btn btn-danger">Verwijder</button>
+            <input type="hidden" name="competition_id" value="{{ current_competition_id }}">
+            <button type="submit" class="btn btn-danger">Uit competitie</button>
           </form>
         </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="4">Geen spelers gevonden.</td>
       </tr>
       {% endfor %}
     </tbody>

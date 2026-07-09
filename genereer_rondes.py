@@ -1,13 +1,36 @@
 import sqlite3
-from collections import defaultdict
-from itertools import combinations
+
 import pandas as pd
 
-def RefreshPlayersResults(database="database.db"):
-    conn = sqlite3.connect(database)
-    cur = conn.cursor()
 
-    cur.execute("DELETE FROM PlayersResults")
+PLAYERS_RESULTS_COLUMNS = """
+    PlayerId,
+    OpponentId,
+    ResultId,
+    GroupNumber,
+    RoundId,
+    Points
+"""
+
+
+def create_players_results_table(cur, table_name, temporary=False):
+    table_type = "TEMP TABLE" if temporary else "TABLE"
+    cur.execute(
+        f"""
+        CREATE {table_type} IF NOT EXISTS {table_name}(
+            PlayerId TEXT,
+            OpponentId TEXT,
+            ResultId INTEGER,
+            GroupNumber INTEGER,
+            RoundId INTEGER,
+            Points REAL
+        )
+        """
+    )
+
+
+def populate_players_results(cur, table_name):
+    cur.execute(f"DELETE FROM {table_name}")
 
     cur.execute("""SELECT Id, Resultstype, GroupNumber, Points FROM Results""")
     results_rows = cur.fetchall()
@@ -52,8 +75,8 @@ def RefreshPlayersResults(database="database.db"):
                 continue
             points, result_id = uneven
             cur.execute(
-                """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                f"""INSERT INTO {table_name} ({PLAYERS_RESULTS_COLUMNS})
+                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (real_player_key, "999", result_id, group_number, round_id, points),
             )
             continue
@@ -78,22 +101,33 @@ def RefreshPlayersResults(database="database.db"):
 
         if player1_present == 1:
             cur.execute(
-                """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                f"""INSERT INTO {table_name} ({PLAYERS_RESULTS_COLUMNS})
+                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (player1_key, player2_key, white_result_id, group_number, round_id, white_points),
             )
         if player2_present == 1:
             cur.execute(
-                """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                f"""INSERT INTO {table_name} ({PLAYERS_RESULTS_COLUMNS})
+                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (player2_key, player1_key, black_result_id, group_number, round_id, black_points),
             )
 
     cur.execute(
-        """SELECT a.PlayerId, a.Present, a.ReasonAbsentId, b.GroupNumber, a.RoundId
+        """SELECT
+                a.PlayerId,
+                a.Present,
+                a.ReasonAbsentId,
+                COALESCE(cpg.GroupNumber, b.GroupNumber) AS GroupNumber,
+                a.RoundId
            FROM Present a
            LEFT JOIN Players b ON a.PlayerId = b.Id
            INNER JOIN Rounds c ON a.RoundId = c.Id
+           INNER JOIN CompetitionPlayers cp
+               ON cp.PlayerId = a.PlayerId
+              AND cp.CompetitionId = c.CompetitionId
+           LEFT JOIN CompetitionPlayerGroups cpg
+               ON cpg.PlayerId = a.PlayerId
+              AND cpg.CompetitionId = c.CompetitionId
            WHERE a.Present = 0 AND c.Played = 1"""
     )
     absent_players = cur.fetchall()
@@ -119,62 +153,162 @@ def RefreshPlayersResults(database="database.db"):
                 result_id = reason_id
 
         cur.execute(
-            """INSERT INTO PlayersResults (PlayerId, OpponentId, ResultId, GroupNumber, RoundId, Points)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            f"""INSERT INTO {table_name} ({PLAYERS_RESULTS_COLUMNS})
+                VALUES (?, ?, ?, ?, ?, ?)""",
             (player_id, 998, result_id, group_number, round_id, points),
         )
 
+
+def RefreshPlayersResults(database="database.db"):
+    conn = sqlite3.connect(database)
+    cur = conn.cursor()
+    create_players_results_table(cur, "PlayersResults")
+    populate_players_results(cur, "PlayersResults")
     conn.commit()
     conn.close()
 
-def BuildNextRound(competition_id, database="database.db"):
-    RefreshPlayersResults(database)
 
-    # Verbinden met de bestaande database
-    conn = sqlite3.connect(database)
-    cur = conn.cursor()
+def create_temp_players_results(cur):
+    table_name = "TempPlayersResults"
+    create_players_results_table(cur, table_name, temporary=True)
+    populate_players_results(cur, table_name)
+    return table_name
 
-    # Instellen van de nieuwe ronde
-
-    # 1. Haal de laatste ronde op
+def get_next_round_id(cur, competition_id):
     cur.execute(
         "SELECT min(Id) FROM Rounds WHERE Played = 0 AND CompetitionId = ?",
         (competition_id,),
     )
-    RoundId = cur.fetchone()[0]
-    if RoundId is None:
-        conn.close()
-        return
+    return cur.fetchone()[0]
 
-    # 2. Bepaal de presentie van de spelers en het aantal punten
-    cur.execute("""SELECT a.PlayerId,a.Present,a.ReasonAbsentId,c.GroupNumber,COALESCE(c.Rating,0) as Rating,SUM(COALESCE(b.Points,0)) as TotalPoints FROM Present a
-                left join PlayersResults b on a.PlayerId = b.PlayerId
-                    and b.RoundId in (
-                        select Id from Rounds where CompetitionId = ?
-                    )
-                left join Players c on a.PlayerId = c.Id
-                WHERE a.RoundId = ?
-                GROUP BY a.PlayerId,a.Present,a.ReasonAbsentId,c.GroupNumber,c.Rating
-                """, (competition_id, RoundId))
 
-    All_players= cur.fetchall()
-    Headers = [desc[0] for desc in cur.description]
+def get_competition_settings_type(cur, competition_id):
+    cur.execute(
+        """
+        SELECT SettingsType
+        FROM CompetitionSettings
+        WHERE CompetitionId = ?
+        """,
+        (competition_id,),
+    )
+    row = cur.fetchone()
+    if row and row[0] in {"swiss", "percentage"}:
+        return row[0]
 
-    df_All_players = pd.DataFrame(All_players, columns=Headers)
-    df_All_players['Matched']=0
+    cur.execute("SELECT Value FROM Settings WHERE Name = 'CompType'")
+    row = cur.fetchone()
+    settings_type = (row[0] if row else "percentage").lower()
+    return settings_type if settings_type in {"swiss", "percentage"} else "percentage"
 
-    # 3. Maak een lijst alle tegenstanders van vorige rondes
 
+def get_rankings_per_group(cur, competition_id, round_id, results_table="PlayersResults"):
+    settings_type = get_competition_settings_type(cur, competition_id)
+    cur.execute(
+        f"""
+        SELECT
+            a.PlayerId,
+            a.Present,
+            a.ReasonAbsentId,
+            COALESCE(cpg.GroupNumber, c.GroupNumber) AS GroupNumber,
+            COALESCE(c.Rating, 0) AS Rating,
+            SUM(COALESCE(b.Points, 0)) AS TotalPoints,
+            SUM(
+                CASE
+                    WHEN d.Resultstype = 1 THEN 1.0
+                    WHEN d.Resultstype = 2 THEN 0.5
+                    ELSE 0
+                END
+            ) AS MatchScore,
+            SUM(CASE WHEN d.Resultstype IN (1, 2, 3) THEN 1 ELSE 0 END) AS MatchesPlayed
+        FROM Present a
+        LEFT JOIN {results_table} b
+            ON a.PlayerId = b.PlayerId
+           AND b.RoundId IN (
+                SELECT Id FROM Rounds WHERE CompetitionId = ?
+           )
+        LEFT JOIN Results d ON b.ResultId = d.Id
+        LEFT JOIN Players c ON a.PlayerId = c.Id
+        INNER JOIN CompetitionPlayers cp
+            ON cp.PlayerId = a.PlayerId
+           AND cp.CompetitionId = ?
+        LEFT JOIN CompetitionPlayerGroups cpg
+            ON cpg.PlayerId = a.PlayerId
+           AND cpg.CompetitionId = cp.CompetitionId
+        WHERE a.RoundId = ?
+        GROUP BY a.PlayerId, a.Present, a.ReasonAbsentId, COALESCE(cpg.GroupNumber, c.GroupNumber), c.Rating
+        """,
+        (competition_id, competition_id, round_id),
+    )
+    player_rows = cur.fetchall()
+    headers = [desc[0] for desc in cur.description]
+    players = pd.DataFrame(player_rows, columns=headers)
+
+    if players.empty:
+        return {}
+
+    present_players = players[players["Present"] == 1].copy()
+    if present_players.empty:
+        return {}
+
+    rankings_by_group = {}
+    for group_number, group_players in present_players.groupby("GroupNumber"):
+        group_players = group_players.copy()
+        group_players["MatchPercentage"] = group_players.apply(
+            lambda player: (
+                player["MatchScore"] / player["MatchesPlayed"]
+                if player["MatchesPlayed"]
+                else 0
+            ),
+            axis=1,
+        )
+        sort_columns = ["TotalPoints", "Rating"]
+        if settings_type == "percentage":
+            sort_columns = ["MatchPercentage", "MatchScore", "MatchesPlayed"]
+
+        ranked_players = group_players.sort_values(
+            by=sort_columns,
+            ascending=[False] * len(sort_columns),
+        ).copy()
+        ranked_players["Matched"] = 0
+
+        if len(ranked_players) % 2 != 0:
+            bye_player = pd.DataFrame(
+                [
+                    {
+                        "PlayerId": 999,
+                        "Present": 1,
+                        "ReasonAbsentId": None,
+                        "GroupNumber": group_number,
+                        "Rating": 0,
+                        "TotalPoints": 0,
+                        "MatchScore": 0,
+                        "MatchesPlayed": 0,
+                        "MatchPercentage": 0,
+                        "Matched": 0,
+                    }
+                ]
+            )
+            ranked_players = pd.concat(
+                [ranked_players, bye_player],
+                ignore_index=True,
+            )
+
+        rankings_by_group[group_number] = ranked_players.reset_index(drop=True)
+
+    return rankings_by_group
+
+
+def get_non_matching_players(cur, competition_id, round_id, results_table="PlayersResults"):
     cur.execute(
         "SELECT NumberOfNonCompete FROM Competitions WHERE Id = ?",
         (competition_id,),
     )
     setting_row = cur.fetchone()
-    NumberOfNonCompete = int(setting_row[0]) if setting_row else 0
+    number_of_non_compete = int(setting_row[0]) if setting_row else 0
 
     cur.execute(
-        """SELECT a.PlayerId, a.OpponentId
-           FROM PlayersResults a
+        f"""SELECT a.PlayerId, a.OpponentId
+           FROM {results_table} a
            INNER JOIN Rounds b ON a.RoundId = b.Id
            WHERE b.CompetitionId = ?
              AND b.RoundNumber >= (
@@ -183,84 +317,85 @@ def BuildNextRound(competition_id, database="database.db"):
              AND b.RoundNumber < (
                  SELECT RoundNumber FROM Rounds WHERE Id = ?
              )""",
-        (competition_id, RoundId, NumberOfNonCompete, RoundId),
+        (competition_id, round_id, number_of_non_compete, round_id),
     )
+    rows = cur.fetchall()
+    headers = [desc[0] for desc in cur.description]
+    return pd.DataFrame(rows, columns=headers)
 
-    nonMatchingPlayers = cur.fetchall()
-    Headers = [desc[0] for desc in cur.description]
 
-    df_nonMatchingPlayers = pd.DataFrame(nonMatchingPlayers, columns=Headers)
+def build_pairings_from_rankings(rankings_by_group, non_matching_players):
+    temp_pairings = []
 
-    TempPairings = []
+    for group_number, ranked_players in rankings_by_group.items():
+        for _, player in ranked_players.iterrows():
+            player_id = player["PlayerId"]
+            if ranked_players.loc[ranked_players["PlayerId"] == player_id, "Matched"].iloc[0] == 1:
+                continue
 
-    df_To_SortPlayers = df_All_players[df_All_players['Present'] == 1]
-    extra_players = []
+            forbidden_opponents = non_matching_players[
+                non_matching_players["PlayerId"] == player_id
+            ]["OpponentId"].tolist()
+            opponent = ranked_players[
+                (~ranked_players["PlayerId"].isin(forbidden_opponents)) &
+                (ranked_players["PlayerId"] != player_id) &
+                (ranked_players["Matched"] == 0)
+            ].head(1)
 
-    for group, group_players in df_To_SortPlayers.groupby('GroupNumber'):
-        num_present = len(group_players)
-        if num_present % 2 != 0:
-            print(f"Group {group} has an uneven number of present players: {num_present}")
-            UnevenPlayer = {
-                'PlayerId': 999, # Cant add the same ID twice. But this needs to be solved differently
-                'Present': 1,
-                'ReasonAbsentId': None,
-                'GroupNumber': group,
-                'Rating': 0,
-                'TotalPoints': 0,
-                'Matched': 0
-            }
-            extra_players.append(UnevenPlayer)
-        else:   
-            print(f"Group {group} has an even number of present players: {num_present}")
-    if extra_players:
-        df_To_SortPlayers = pd.concat([df_To_SortPlayers, pd.DataFrame(extra_players)], ignore_index=True)
+            if opponent.empty:
+                continue
 
-    df_To_MatchPlayers = df_To_SortPlayers.sort_values(by=['TotalPoints','Rating'], ascending=[False,False])
-    print(df_To_MatchPlayers)
-    for idx,player in df_To_MatchPlayers.iterrows():
-        player_id = player['PlayerId']
-        group_number = player['GroupNumber']
-        if df_To_MatchPlayers.loc[df_To_MatchPlayers['PlayerId'] == player_id, 'Matched'].iloc[0] == 1:
-            continue
-        # Get all opponents that player cannot play against
-        forbidden_opponents = df_nonMatchingPlayers[df_nonMatchingPlayers['PlayerId'] == player_id]['OpponentId'].tolist()
-        # Find first opponent not in forbidden_opponents and not the player himself
-        opponent = df_To_MatchPlayers[
-            (~df_To_MatchPlayers['PlayerId'].isin(forbidden_opponents)) &
-            (df_To_MatchPlayers['PlayerId'] != player_id) &
-            (df_To_MatchPlayers['GroupNumber'] == group_number) &
-            (df_To_MatchPlayers['Matched'] == 0)
-        ].head(1)
-        print(opponent)
-        if not opponent.empty:
-            opponent_id = opponent.iloc[0]['PlayerId']
-            print(f"Player {player_id} can play against {opponent.iloc[0]['PlayerId']}")
-            df_To_MatchPlayers.loc[
-                (df_To_MatchPlayers['PlayerId'] == player_id) & 
-                (df_To_MatchPlayers['GroupNumber'] == group_number)
-                ,'Matched'] = 1
-            df_To_MatchPlayers.loc[
-                (df_To_MatchPlayers['PlayerId'] == opponent_id) &
-                (df_To_MatchPlayers['GroupNumber'] == group_number)
-                ,'Matched'] = 1
-            TempPairings.append((player_id, opponent_id,group_number))
-        else:
-            print(f"Player {player_id} has no available opponents.{group_number}")
+            opponent_id = opponent.iloc[0]["PlayerId"]
+            ranked_players.loc[ranked_players["PlayerId"] == player_id, "Matched"] = 1
+            ranked_players.loc[ranked_players["PlayerId"] == opponent_id, "Matched"] = 1
+            temp_pairings.append((player_id, opponent_id, group_number))
 
+    return temp_pairings
+
+
+def save_temp_pairings(cur, competition_id, round_id, temp_pairings):
     cur.execute(
         """DELETE FROM TempPairing
            WHERE RoundId IN (SELECT Id FROM Rounds WHERE CompetitionId = ?)""",
         (competition_id,),
     )
-    conn.commit()
-    insert_query = """
-    INSERT INTO TempPairing (PlayerId1, PlayerId2, RoundId, GroupNumber)
-    VALUES (?,?, ?, ?)
-    """
+    cur.executemany(
+        """
+        INSERT INTO TempPairing (PlayerId1, PlayerId2, RoundId, GroupNumber)
+        VALUES (?, ?, ?, ?)
+        """,
+        [(pair[0], pair[1], round_id, pair[2]) for pair in temp_pairings],
+    )
 
-    data_to_insert = [(pair[0], pair[1],RoundId,pair[2]) for pair in TempPairings]
 
-    cur.executemany(insert_query, data_to_insert)
+def BuildNextRound(competition_id, database="database.db"):
+    conn = sqlite3.connect(database)
+    cur = conn.cursor()
+
+    round_id = get_next_round_id(cur, competition_id)
+    if round_id is None:
+        conn.close()
+        return
+
+    results_table = create_temp_players_results(cur)
+    rankings_by_group = get_rankings_per_group(
+        cur,
+        competition_id,
+        round_id,
+        results_table,
+    )
+    non_matching_players = get_non_matching_players(
+        cur,
+        competition_id,
+        round_id,
+        results_table,
+    )
+    temp_pairings = build_pairings_from_rankings(
+        rankings_by_group,
+        non_matching_players,
+    )
+
+    save_temp_pairings(cur, competition_id, round_id, temp_pairings)
     conn.commit()
     conn.close()
 

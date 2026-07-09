@@ -6,7 +6,13 @@
     <tr>
       <th>Naam</th>
       <th>Groep</th>
-      <th>Punten</th>
+      {% if settings_type == "percentage" %}
+        <th>Percentage</th>
+        <th>Score</th>
+        <th>Partijen</th>
+      {% else %}
+        <th>Punten</th>
+      {% endif %}
     </tr>
   </thead>
   <tbody>
@@ -14,7 +20,13 @@
     <tr>
       <td><a href="/speler/{{ p.id }}">{{ p.name }}</a></td>
       <td>{{ p.GroupNumber}}</td>
-      <td>{{ p.TotalPoints }}</td>
+      {% if settings_type == "percentage" %}
+        <td>{{ "%.1f"|format(p.MatchPercentage * 100) }}%</td>
+        <td>{{ p.MatchScore }}</td>
+        <td>{{ p.MatchesPlayed }}</td>
+      {% else %}
+        <td>{{ p.TotalPoints }}</td>
+      {% endif %}
     </tr>
     {% endfor %}
   </tbody>
