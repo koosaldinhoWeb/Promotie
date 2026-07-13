@@ -31,6 +31,20 @@
     </div>
     <div id="groups"></div>
 
+    <div class="settings-heading">
+      <h3>Spelergroepen</h3>
+    </div>
+    <table class="player-group-table">
+      <thead>
+        <tr>
+          <th>Meedoen</th>
+          <th>Speler</th>
+          <th>Groep</th>
+        </tr>
+      </thead>
+      <tbody id="player-groups"></tbody>
+    </table>
+
     <button type="submit" class="btn">Instellingen opslaan</button>
   </form>
 
@@ -80,6 +94,7 @@
     const initialSettings = {{ settings_data|tojson }};
     const form = document.getElementById("settings-form");
     const groupsContainer = document.getElementById("groups");
+    const playerGroupsContainer = document.getElementById("player-groups");
     const groupTemplate = document.getElementById("group-template");
     const reasonTemplate = document.getElementById("reason-template");
 
@@ -99,6 +114,59 @@
         groupNumber ? `Groep ${groupNumber}` : "Nieuwe groep";
     }
 
+    function currentGroupNumbers() {
+      return [...document.querySelectorAll(".group-number")]
+        .map((input) => Number(input.value))
+        .filter((value, index, values) => Number.isInteger(value) && value > 0 && values.indexOf(value) === index)
+        .sort((a, b) => a - b);
+    }
+
+    function refreshPlayerGroupOptions() {
+      const groupNumbers = currentGroupNumbers();
+      document.querySelectorAll(".player-group-select").forEach((select) => {
+        const selectedValue = select.value || select.dataset.originalGroup;
+        select.innerHTML = "";
+        groupNumbers.forEach((groupNumber) => {
+          const option = document.createElement("option");
+          option.value = String(groupNumber);
+          option.textContent = String(groupNumber);
+          select.appendChild(option);
+        });
+        if (groupNumbers.includes(Number(selectedValue))) {
+          select.value = String(selectedValue);
+        } else if (groupNumbers.length > 0) {
+          select.value = String(groupNumbers[0]);
+        }
+      });
+    }
+
+    function updatePlayerGroupState(row) {
+      const checkbox = row.querySelector(".player-competition-checkbox");
+      const select = row.querySelector(".player-group-select");
+      select.disabled = !checkbox.checked;
+    }
+
+    function renderPlayerGroups() {
+      (initialSettings.player_groups || []).forEach((player) => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>
+            <input type="checkbox" class="player-competition-checkbox" data-player-id="${player.id}">
+          </td>
+          <td>${player.name}</td>
+          <td>
+            <select class="player-group-select" data-player-id="${player.id}" data-original-group="${player.group_number}"></select>
+          </td>
+        `;
+        const checkbox = row.querySelector(".player-competition-checkbox");
+        checkbox.checked = player.in_competition !== false;
+        checkbox.addEventListener("change", () => updatePlayerGroupState(row));
+        playerGroupsContainer.appendChild(row);
+        updatePlayerGroupState(row);
+      });
+      refreshPlayerGroupOptions();
+    }
+
     function addGroup(group = {}) {
       const groupElement = groupTemplate.content.firstElementChild.cloneNode(true);
       groupElement.querySelector(".group-number").value = group.group_number || "";
@@ -107,16 +175,19 @@
       groupElement.querySelector(".loss-points").value = group.loss_points ?? 0;
       groupElement.querySelector(".group-number").addEventListener("input", () => {
         updateGroupTitle(groupElement);
+        refreshPlayerGroupOptions();
       });
       groupElement.querySelector(".add-reason").addEventListener("click", () => {
         addReason(groupElement);
       });
       groupElement.querySelector(".remove-group").addEventListener("click", () => {
         groupElement.remove();
+        refreshPlayerGroupOptions();
       });
       (group.absence_reasons || []).forEach((reason) => addReason(groupElement, reason));
       updateGroupTitle(groupElement);
       groupsContainer.appendChild(groupElement);
+      refreshPlayerGroupOptions();
     }
 
     document.getElementById("settings-name").value = initialSettings.name || "";
@@ -126,6 +197,7 @@
         : "percentage";
     (initialSettings.groups || []).forEach(addGroup);
     document.getElementById("add-group").addEventListener("click", () => addGroup());
+    renderPlayerGroups();
 
     form.addEventListener("submit", (event) => {
       if (!form.reportValidity()) {
@@ -143,11 +215,17 @@
           points: Number(reasonElement.querySelector(".reason-points").value),
         })),
       }));
+      const playerGroups = [...document.querySelectorAll(".player-group-select")].map((select) => ({
+        player_id: select.dataset.playerId,
+        group_number: Number(select.value),
+        in_competition: document.querySelector(`.player-competition-checkbox[data-player-id="${select.dataset.playerId}"]`).checked,
+      }));
 
       document.getElementById("configuration").value = JSON.stringify({
         name: document.getElementById("settings-name").value.trim(),
         settings_type: document.getElementById("settings-type").value,
         groups,
+        player_groups: playerGroups,
       });
     });
   </script>
