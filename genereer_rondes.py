@@ -1,4 +1,5 @@
 import sqlite3
+import random
 
 import pandas as pd
 
@@ -324,7 +325,40 @@ def get_non_matching_players(cur, competition_id, round_id, results_table="Playe
     return pd.DataFrame(rows, columns=headers)
 
 
-def build_pairings_from_rankings(rankings_by_group, non_matching_players):
+def get_white_game_counts(cur, competition_id):
+    cur.execute(
+        """
+        SELECT p.PlayerId1, COUNT(*) AS WhiteGames
+        FROM Pairings p
+        INNER JOIN Rounds r ON p.RoundId = r.Id
+        WHERE r.CompetitionId = ?
+          AND r.Played = 1
+          AND p.PlayerId1 NOT IN ('999', 'NONE')
+          AND p.PlayerId2 NOT IN ('999', 'NONE')
+        GROUP BY p.PlayerId1
+        """,
+        (competition_id,),
+    )
+    return {str(player_id): count for player_id, count in cur.fetchall()}
+
+
+def orient_pairing_by_white_games(player_id, opponent_id, white_game_counts):
+    player_key = str(player_id)
+    opponent_key = str(opponent_id)
+
+    if player_key == "999" or opponent_key == "999":
+        return player_id, opponent_id
+
+    player_white_games = white_game_counts.get(player_key, 0)
+    opponent_white_games = white_game_counts.get(opponent_key, 0)
+    if player_white_games < opponent_white_games:
+        return player_id, opponent_id
+    if opponent_white_games < player_white_games:
+        return opponent_id, player_id
+    return random.choice(((player_id, opponent_id), (opponent_id, player_id)))
+
+
+def build_pairings_from_rankings(rankings_by_group, non_matching_players, white_game_counts):
     temp_pairings = []
 
     for group_number, ranked_players in rankings_by_group.items():
@@ -348,7 +382,12 @@ def build_pairings_from_rankings(rankings_by_group, non_matching_players):
             opponent_id = opponent.iloc[0]["PlayerId"]
             ranked_players.loc[ranked_players["PlayerId"] == player_id, "Matched"] = 1
             ranked_players.loc[ranked_players["PlayerId"] == opponent_id, "Matched"] = 1
-            temp_pairings.append((player_id, opponent_id, group_number))
+            white_id, black_id = orient_pairing_by_white_games(
+                player_id,
+                opponent_id,
+                white_game_counts,
+            )
+            temp_pairings.append((white_id, black_id, group_number))
 
     return temp_pairings
 
@@ -390,9 +429,11 @@ def BuildNextRound(competition_id, database="database.db"):
         round_id,
         results_table,
     )
+    white_game_counts = get_white_game_counts(cur, competition_id)
     temp_pairings = build_pairings_from_rankings(
         rankings_by_group,
         non_matching_players,
+        white_game_counts,
     )
 
     save_temp_pairings(cur, competition_id, round_id, temp_pairings)
